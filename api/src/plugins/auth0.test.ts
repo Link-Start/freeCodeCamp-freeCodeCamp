@@ -226,6 +226,62 @@ describe('auth0 plugin', () => {
       expect(captureException).not.toHaveBeenCalled();
     });
 
+    test('should capture Auth0 errors with reason invalid_request', async () => {
+      vi.spyOn(fastify.log, 'error');
+      const auth0Error = Error('Response Error: 400 Bad Request');
+      // @ts-expect-error - mocking a hapi/boom error
+      auth0Error.data = {
+        payload: {
+          error: 'invalid_request'
+        }
+      };
+
+      getAccessTokenFromAuthorizationCodeFlowSpy.mockRejectedValueOnce(
+        auth0Error
+      );
+
+      const res = await fastify.inject({
+        method: 'GET',
+        url: '/auth/auth0/callback?state=invalid'
+      });
+
+      expect(fastify.log.error).toHaveBeenCalledWith(
+        auth0Error,
+        'Auth failed: invalid_request'
+      );
+
+      expect(res.statusCode).toBe(302);
+      expect(captureException).toHaveBeenCalledOnce();
+    });
+
+    test('should capture unexpected Auth0 errors', async () => {
+      vi.spyOn(fastify.log, 'error');
+      const auth0Error = Error('Response Error: 500 Internal Server Error');
+      // @ts-expect-error - mocking a hapi/boom error
+      auth0Error.data = {
+        payload: {
+          error: 'server_error'
+        }
+      };
+
+      getAccessTokenFromAuthorizationCodeFlowSpy.mockRejectedValueOnce(
+        auth0Error
+      );
+
+      const res = await fastify.inject({
+        method: 'GET',
+        url: '/auth/auth0/callback?state=invalid'
+      });
+
+      expect(fastify.log.error).toHaveBeenCalledWith(
+        auth0Error,
+        'Auth failed: server_error'
+      );
+
+      expect(res.statusCode).toBe(302);
+      expect(captureException).toHaveBeenCalledOnce();
+    });
+
     test('should not create a user if the state is invalid', async () => {
       await fastify.inject({
         method: 'GET',
@@ -287,7 +343,7 @@ describe('auth0 plugin', () => {
       expect(captureException).toHaveBeenCalledOnce();
     });
 
-    test('does not capture userinfo errors carrying innerError', async () => {
+    test('captures userinfo errors carrying innerError', async () => {
       getAccessTokenFromAuthorizationCodeFlowSpy.mockResolvedValueOnce({
         token: 'any token'
       });
@@ -303,7 +359,7 @@ describe('auth0 plugin', () => {
       });
 
       expect(res.statusCode).toBe(302);
-      expect(captureException).not.toHaveBeenCalled();
+      expect(captureException).toHaveBeenCalledOnce();
     });
 
     test('handles invalid userinfo responses', async () => {

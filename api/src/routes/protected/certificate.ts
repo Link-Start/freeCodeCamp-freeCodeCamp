@@ -249,6 +249,9 @@ export const protectedCertificateRoutes: FastifyPluginCallbackTypebox = (
 
       if (!user) {
         void reply.code(500);
+        fastify.Sentry?.captureException(
+          new Error('User not found when claiming certificate')
+        );
         req.log.error('User not found');
         return {
           type: 'danger',
@@ -396,6 +399,7 @@ export const protectedCertificateRoutes: FastifyPluginCallbackTypebox = (
           await fastify.sendEmail(notifyUser);
         } catch (e) {
           req.log.error(e, 'Failed to send congratulations email');
+          fastify.Sentry?.captureException(e);
         }
       }
 

@@ -178,6 +178,7 @@ export const settingRoutes: FastifyPluginCallbackTypebox = (
           type: 'success'
         } as const;
       } catch (err) {
+        fastify.Sentry?.captureException(err);
         req.log.error(err, 'Error updating profileUI');
         void reply.code(500);
         return { message: 'flash.wrong-updating', type: 'danger' } as const;
@@ -330,6 +331,7 @@ ${isLinkSentWithinLimitTTL}`
           type: 'info'
         });
       } catch (err) {
+        fastify.Sentry?.captureException(err);
         req.log.error(err, 'Error updating email address');
         void reply.code(500);
         await reply.send({ message: 'flash.wrong-updating', type: 'danger' });
@@ -356,6 +358,7 @@ ${isLinkSentWithinLimitTTL}`
           type: 'success'
         } as const;
       } catch (err) {
+        fastify.Sentry?.captureException(err);
         req.log.error(err, 'Error updating theme');
         void reply.code(500);
         return { message: 'flash.wrong-updating', type: 'danger' } as const;
@@ -382,7 +385,14 @@ ${isLinkSentWithinLimitTTL}`
       ).every(key => validateSocialUrl(socials[key], key));
 
       if (!valid) {
-        req.log.warn({ socials }, 'Invalid social URL');
+        req.log.warn(
+          {
+            invalidSocials: (
+              ['twitter', 'bluesky', 'githubProfile', 'linkedin'] as const
+            ).filter(key => !validateSocialUrl(socials[key], key))
+          },
+          'Invalid social URL'
+        );
         void reply.code(400);
         return reply.send({
           message: 'flash.wrong-updating',
@@ -407,6 +417,7 @@ ${isLinkSentWithinLimitTTL}`
           type: 'success'
         } as const;
       } catch (err) {
+        fastify.Sentry?.captureException(err);
         req.log.error(err, 'Error updating socials');
         void reply.code(500);
         return { message: 'flash.wrong-updating', type: 'danger' } as const;
@@ -505,6 +516,7 @@ ${isLinkSentWithinLimitTTL}`
           variables: { username: newUsernameDisplay }
         });
       } catch (err) {
+        fastify.Sentry?.captureException(err);
         req.log.error(err, 'Error updating username');
         void reply.code(500);
         await reply.send({ message: 'flash.wrong-updating', type: 'danger' });
@@ -522,7 +534,13 @@ ${isLinkSentWithinLimitTTL}`
       if (req.body.picture) {
         if (req.body.picture !== req.user!.picture) {
           if (!isValidPictureUrl(req.body.picture)) {
-            req.log.warn({ picture: req.body.picture }, 'Invalid picture URL');
+            req.log.warn(
+              {
+                hasPicture: !!req.body.picture,
+                pictureLength: req.body.picture?.length
+              },
+              'Invalid picture URL'
+            );
             void reply.code(400);
             return { message: 'flash.wrong-updating', type: 'danger' } as const;
           }
@@ -545,6 +563,7 @@ ${isLinkSentWithinLimitTTL}`
           type: 'success'
         } as const;
       } catch (err) {
+        fastify.Sentry?.captureException(err);
         req.log.error(err, 'Error updating about');
         void reply.code(500);
         return { message: 'flash.wrong-updating', type: 'danger' } as const;
@@ -571,6 +590,7 @@ ${isLinkSentWithinLimitTTL}`
           type: 'success'
         } as const;
       } catch (err) {
+        fastify.Sentry?.captureException(err);
         req.log.error(err, 'Error updating keyboard shortcuts');
         void reply.code(500);
         return { message: 'flash.wrong-updating', type: 'danger' } as const;
@@ -597,6 +617,7 @@ ${isLinkSentWithinLimitTTL}`
           type: 'success'
         } as const;
       } catch (err) {
+        fastify.Sentry?.captureException(err);
         req.log.error(err, 'Error updating Quincy email preference');
         void reply.code(500);
         return { message: 'flash.wrong-updating', type: 'danger' } as const;
@@ -623,6 +644,7 @@ ${isLinkSentWithinLimitTTL}`
           type: 'success'
         } as const;
       } catch (err) {
+        fastify.Sentry?.captureException(err);
         req.log.error(err, 'Error updating Socrates preference');
         void reply.code(500);
         return { message: 'flash.wrong-updating', type: 'danger' } as const;
@@ -649,6 +671,7 @@ ${isLinkSentWithinLimitTTL}`
           type: 'success'
         } as const;
       } catch (err) {
+        fastify.Sentry?.captureException(err);
         req.log.error(err, 'Error updating honesty');
         void reply.code(500);
         return { message: 'flash.wrong-updating', type: 'danger' } as const;
@@ -676,6 +699,7 @@ ${isLinkSentWithinLimitTTL}`
           type: 'success'
         } as const;
       } catch (err) {
+        fastify.Sentry?.captureException(err);
         req.log.error(err, 'Error updating privacy terms');
         void reply.code(500);
         return { message: 'flash.wrong-updating', type: 'danger' } as const;
@@ -713,6 +737,7 @@ ${isLinkSentWithinLimitTTL}`
           type: 'success'
         } as const;
       } catch (err) {
+        fastify.Sentry?.captureException(err);
         req.log.error(err, 'Error updating portfolio');
         void reply.code(500);
         return { message: 'flash.wrong-updating', type: 'danger' } as const;
@@ -741,6 +766,7 @@ ${isLinkSentWithinLimitTTL}`
           type: 'success'
         } as const;
       } catch (err) {
+        fastify.Sentry?.captureException(err);
         req.log.error(err, 'Error updating experience');
         void reply.code(500);
         return { message: 'flash.wrong-updating', type: 'danger' } as const;
@@ -768,6 +794,7 @@ ${isLinkSentWithinLimitTTL}`
           type: 'success'
         } as const;
       } catch (err) {
+        fastify.Sentry?.captureException(err);
         req.log.error(err, 'Error updating classroom mode');
         void reply.code(500);
         return { message: 'flash.wrong-updating', type: 'danger' } as const;
@@ -854,7 +881,7 @@ export const settingRedirectRoutes: FastifyPluginCallbackTypebox = (
 
       const { origin } = getRedirectParams(req);
       if (!validator.default.isEmail(email)) {
-        req.log.warn({ email }, 'Invalid email format');
+        req.log.warn({ userId: req.user?.id }, 'Invalid email format');
         return reply.redirectWithMessage(origin, redirectMessage);
       }
 

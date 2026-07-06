@@ -410,6 +410,52 @@ describe('auth', () => {
     });
   });
 
+  describe('authorizeExamEnvironmentToken', () => {
+    beforeEach(() => {
+      fastify.get('/test', (_req, reply) => {
+        void reply.send({ ok: true });
+      });
+      fastify.addHook('onRequest', fastify.authorizeExamEnvironmentToken);
+    });
+
+    test('captures an Error if the decoded payload is not an object', async () => {
+      const captureException = vi.fn();
+      // @ts-expect-error Sentry isn't decorated in this minimal test app.
+      fastify.Sentry = { captureException };
+
+      const token = jwt.sign('just-a-string-payload', JWT_SECRET);
+
+      const res = await fastify.inject({
+        method: 'GET',
+        url: '/test',
+        headers: { 'exam-environment-authorization-token': token }
+      });
+
+      expect(res.statusCode).toBe(500);
+      expect(captureException).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          message:
+            'Unreachable: exam-environment token decoded payload is not an object'
+        })
+      );
+    });
+
+    test('does not capture an exception for expected token verification failures', async () => {
+      const captureException = vi.fn();
+      // @ts-expect-error Sentry isn't decorated in this minimal test app.
+      fastify.Sentry = { captureException };
+
+      const res = await fastify.inject({
+        method: 'GET',
+        url: '/test',
+        headers: { 'exam-environment-authorization-token': 'invalid-token' }
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(captureException).not.toHaveBeenCalled();
+    });
+  });
+
   describe('onRequest Hook', () => {
     test('should update the jwt_access_token to httpOnly and secure', async () => {
       const rawValue = 'should-not-change';
@@ -489,6 +535,71 @@ describe('auth', () => {
         .map(line => JSON.parse(line) as Record<string, unknown>)
         .find(entry => entry.msg === 'request completed');
       expect(completed?.userId).toBe('user-42');
+    });
+  });
+
+  describe('auth.access_denied metric', () => {
+    let count: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      count = vi.fn();
+      // @ts-expect-error Sentry isn't decorated in this minimal test app.
+      fastify.Sentry = { metrics: { count } };
+      fastify.get('/user/session-user', (_req, reply) => {
+        void reply.send({ ok: true });
+      });
+      fastify.get('/other', (_req, reply) => {
+        void reply.send({ ok: true });
+      });
+      fastify.addHook('onRequest', fastify.authorize);
+    });
+
+    test('skips the metric for the anonymous session-user poll', async () => {
+      await fastify.inject({ method: 'GET', url: '/user/session-user' });
+
+      expect(count).not.toHaveBeenCalled();
+    });
+
+    test('still counts an invalid token on the session-user route', async () => {
+      const token = jwt.sign(
+        { accessToken: createAccessToken('123') },
+        'invalid-secret'
+      );
+
+      await fastify.inject({
+        method: 'GET',
+        url: '/user/session-user',
+        cookies: { jwt_access_token: signCookie(token) }
+      });
+
+      expect(count).toHaveBeenCalledExactlyOnceWith('auth.access_denied', 1, {
+        attributes: { reason: 'Your access token is invalid' }
+      });
+    });
+
+    test('still counts an expired token on the session-user route', async () => {
+      const token = jwt.sign(
+        { accessToken: createAccessToken('123', -1) },
+        JWT_SECRET
+      );
+
+      await fastify.inject({
+        method: 'GET',
+        url: '/user/session-user',
+        cookies: { jwt_access_token: signCookie(token) }
+      });
+
+      expect(count).toHaveBeenCalledExactlyOnceWith('auth.access_denied', 1, {
+        attributes: { reason: 'Access token is no longer valid' }
+      });
+    });
+
+    test('counts a missing token on other routes', async () => {
+      await fastify.inject({ method: 'GET', url: '/other' });
+
+      expect(count).toHaveBeenCalledExactlyOnceWith('auth.access_denied', 1, {
+        attributes: { reason: 'Access token is required for this request' }
+      });
     });
   });
 });

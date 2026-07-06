@@ -1,10 +1,11 @@
-import type { Log } from '@sentry/node';
+import type { ErrorEvent, Log } from '@sentry/node';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
   makeShouldSendLog,
   makeTracesSampler,
-  scrubRedundantLogAttributes
+  scrubRedundantLogAttributes,
+  scrubRequestPii
 } from './sentry.js';
 
 const makeLog = (overrides: Partial<Log> = {}): Log => ({
@@ -141,6 +142,96 @@ describe('makeShouldSendLog — debug sampling', () => {
   });
 });
 
+describe('makeShouldSendLog — info sampling', () => {
+  it('always keeps audit info logs even at a zero sample rate', () => {
+    expect(
+      makeShouldSendLog(1, 0)(makeLog({ attributes: { audit: true } }))
+    ).toBe(true);
+  });
+
+  it('always keeps audit info logs on an otherwise suppressed route', () => {
+    expect(
+      makeShouldSendLog(
+        1,
+        0
+      )(
+        makeLog({
+          attributes: { audit: true, route: '/some/route' }
+        })
+      )
+    ).toBe(true);
+  });
+
+  it('keeps audit info logs on a real suppressed route even at zero sample rates', () => {
+    expect(
+      makeShouldSendLog(
+        0,
+        0
+      )(
+        makeLog({
+          message: 'audit',
+          attributes: { audit: true, route: '/user/session-user' }
+        })
+      )
+    ).toBe(true);
+  });
+
+  it('keeps audit logs regardless of level, including debug on a suppressed route', () => {
+    expect(
+      makeShouldSendLog(
+        0,
+        0
+      )(
+        makeLog({
+          level: 'debug',
+          message: 'audit',
+          attributes: { audit: true, route: '/user/session-user' }
+        })
+      )
+    ).toBe(true);
+  });
+
+  it('drops non-audit info logs at a zero sample rate', () => {
+    expect(
+      makeShouldSendLog(1, 0)(makeLog({ attributes: { traceId: 'abc' } }))
+    ).toBe(false);
+  });
+
+  it('keeps non-audit info logs at a sample rate of 1', () => {
+    expect(
+      makeShouldSendLog(1, 1)(makeLog({ attributes: { traceId: 'abc' } }))
+    ).toBe(true);
+  });
+
+  it('keeps info whose trace is sampled regardless of the info rate', () => {
+    expect(
+      makeShouldSendLog(
+        1,
+        0
+      )(makeLog({ attributes: { traceId: 'abc', traceSampled: true } }))
+    ).toBe(true);
+  });
+
+  it('samples non-audit info deterministically by traceId', () => {
+    const log = makeLog({ attributes: { traceId: 'deadbeef' } });
+    const first = makeShouldSendLog(1, 0.5)(log);
+    const second = makeShouldSendLog(1, 0.5)(log);
+    expect(first).toBe(second);
+  });
+
+  it('never touches warn/error/fatal regardless of the info rate', () => {
+    for (const level of ['warn', 'error', 'fatal'] as const) {
+      expect(makeShouldSendLog(1, 0)(makeLog({ level }))).toBe(true);
+    }
+  });
+
+  it('defaults to a sample rate of 1 when none is given', () => {
+    expect(
+      makeShouldSendLog(1)(makeLog({ attributes: { traceId: 'abc' } }))
+    ).toBe(true);
+  });
+});
+
 describe('scrubRedundantLogAttributes', () => {
   it('drops pino bindings duplicated by Sentry-native fields', () => {
     const result = scrubRedundantLogAttributes(
@@ -224,6 +315,375 @@ describe('scrubRedundantLogAttributes', () => {
       ip: '1.2.3.4',
       country: 'US'
     });
+  });
+
+  it('redacts secret-token-shaped substrings found inside a string value', () => {
+    const result = scrubRedundantLogAttributes(
+      makeLog({
+        attributes: { note: 'leaked key sk_live_ABC123 in the log' }
+      })
+    );
+
+    expect(result.attributes?.note).toBe('leaked key [REDACTED] in the log');
+  });
+
+  it('does not redact an email value as a secret-token substring', () => {
+    const result = scrubRedundantLogAttributes(
+      makeLog({ attributes: { note: 'contact a@b.com for help' } })
+    );
+
+    expect(result.attributes?.note).toBe('contact a@b.com for help');
+  });
+
+  it('keeps email values unredacted on the Logs channel, unlike Issues', () => {
+    const result = scrubRedundantLogAttributes(
+      makeLog({ attributes: { email: 'keep@me.com' } })
+    );
+
+    expect(result.attributes?.email).toBe('keep@me.com');
+  });
+
+  it('redacts a bare JWT substring in a log string value', () => {
+    const result = scrubRedundantLogAttributes(
+      makeLog({
+        attributes: {
+          note: 'token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dozjgNryP4J3jVmNHl0w5 rest'
+        }
+      })
+    );
+
+    expect(result.attributes?.note).toBe('token [REDACTED] rest');
+  });
+
+  it('redacts a lowercase bearer token substring in a log string value', () => {
+    const result = scrubRedundantLogAttributes(
+      makeLog({
+        attributes: {
+          note: 'auth bearer abcdefghijklmnopqrstuvwxyz012345 done'
+        }
+      })
+    );
+
+    expect(result.attributes?.note).toBe('auth [REDACTED] done');
+  });
+
+  it('fail-safe redacts a Logs attribute value nested past the depth cap', () => {
+    const buildNested = (depth: number, leaf: unknown): unknown =>
+      depth <= 0 ? leaf : { nested: buildNested(depth - 1, leaf) };
+
+    const result = scrubRedundantLogAttributes(
+      makeLog({
+        attributes: buildNested(9, 'deep-plain-value') as Record<
+          string,
+          unknown
+        >
+      })
+    );
+
+    const serialized = JSON.stringify(result.attributes);
+    expect(serialized).toContain('[REDACTED]');
+    expect(serialized).not.toContain('deep-plain-value');
+  });
+
+  it('redacts a secret-shaped substring in the log message', () => {
+    const result = scrubRedundantLogAttributes(
+      makeLog({
+        message: 'auth bearer abcdefghijklmnopqrstuvwxyz012345 failed'
+      })
+    );
+
+    expect(result.message).toBe('auth [REDACTED] failed');
+  });
+
+  it('keeps an email in the log message unredacted on the Logs channel', () => {
+    const result = scrubRedundantLogAttributes(
+      makeLog({ message: 'donation outreach to user@example.com queued' })
+    );
+
+    expect(result.message).toBe('donation outreach to user@example.com queued');
+  });
+
+  it('redacts a Stripe webhook secret in an attribute value', () => {
+    const result = scrubRedundantLogAttributes(
+      makeLog({ attributes: { note: 'sig whsec_abcdef0123456789 ok' } })
+    );
+
+    expect(result.attributes?.note).toBe('sig [REDACTED] ok');
+  });
+
+  it('redacts a Basic auth credential in an attribute value', () => {
+    const result = scrubRedundantLogAttributes(
+      makeLog({
+        attributes: { note: 'auth Basic dXNlcjpodW50ZXIyc2VjcmV0 end' }
+      })
+    );
+
+    expect(result.attributes?.note).toBe('auth [REDACTED] end');
+  });
+
+  it('scrubs a pathological JWT-prefix string without catastrophic backtracking', () => {
+    const attack = 'eyJ'.repeat(80000);
+    const result = scrubRedundantLogAttributes(
+      makeLog({ attributes: { note: attack } })
+    );
+
+    expect(typeof result.attributes?.note).toBe('string');
+  });
+
+  it('redacts a secret in a boxed-String (parameterized) message', () => {
+    const message = Object.assign(
+      new String('issued token sk_live_BOXEDLEAK now'),
+      {
+        __sentry_template_string__: 'issued token %s now',
+        __sentry_template_values__: ['sk_live_BOXEDLEAK']
+      }
+    ) as unknown as Log['message'];
+
+    const result = scrubRedundantLogAttributes(makeLog({ message }));
+
+    expect(String(result.message)).toBe('issued token [REDACTED] now');
+  });
+
+  it('redacts secrets nested inside an array attribute value', () => {
+    const result = scrubRedundantLogAttributes(
+      makeLog({
+        attributes: { items: [{ list: [{ client_secret: 'ARRLEAK' }] }] }
+      })
+    );
+
+    expect(JSON.stringify(result.attributes)).not.toContain('ARRLEAK');
+  });
+});
+
+describe('scrubRequestPii', () => {
+  const eventWithRequest = (request: ErrorEvent['request']): ErrorEvent => ({
+    type: undefined,
+    request
+  });
+
+  it('is a no-op when the event has no request', () => {
+    const event = eventWithRequest(undefined);
+    expect(scrubRequestPii(event)).toEqual(event);
+  });
+
+  it('strips the query string entirely and the query portion of the url', () => {
+    const result = scrubRequestPii(
+      eventWithRequest({
+        url: 'https://api.freecodecamp.org/donate?code=abc123',
+        query_string: 'code=abc123'
+      })
+    );
+
+    expect(result.request?.query_string).toBeUndefined();
+    expect(result.request?.url).toBe('https://api.freecodecamp.org/donate');
+  });
+
+  it('redacts an email embedded in the url path', () => {
+    const result = scrubRequestPii(
+      eventWithRequest({ url: 'https://api.freecodecamp.org/u/foo@bar.com' })
+    );
+
+    expect(result.request?.url).toBe(
+      'https://api.freecodecamp.org/u/[REDACTED]'
+    );
+  });
+
+  it('redacts PII- and secret-shaped keys from the request body', () => {
+    const result = scrubRequestPii(
+      eventWithRequest({
+        data: {
+          paymentMethodId: 'pm_12345',
+          email: 'a@b.com',
+          name: 'Camper Bot',
+          code: 'oauth-code',
+          state: 'oauth-state',
+          amount: 500
+        }
+      })
+    );
+
+    expect(result.request?.data).toEqual({
+      paymentMethodId: '[REDACTED]',
+      email: '[REDACTED]',
+      name: '[REDACTED]',
+      code: '[REDACTED]',
+      state: '[REDACTED]',
+      amount: 500
+    });
+  });
+
+  it('redacts sensitive request headers', () => {
+    const result = scrubRequestPii(
+      eventWithRequest({
+        headers: { authorization: 'Bearer sk_live_LEAK', 'user-agent': 'x' }
+      })
+    );
+
+    expect(result.request?.headers).toEqual({
+      authorization: '[REDACTED]',
+      'user-agent': 'x'
+    });
+  });
+
+  it('redacts email and paymentMethodId when request data is a raw JSON string', () => {
+    const result = scrubRequestPii(
+      eventWithRequest({
+        data: JSON.stringify({
+          email: 'a@b.com',
+          paymentMethodId: 'pm_123',
+          amount: 5
+        })
+      })
+    );
+
+    const data = result.request?.data;
+    const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+
+    expect(parsed).toEqual({
+      email: '[REDACTED]',
+      paymentMethodId: '[REDACTED]',
+      amount: 5
+    });
+  });
+
+  it('always strips cookies regardless of their content', () => {
+    const result = scrubRequestPii(
+      eventWithRequest({ cookies: { jwt_access_token: 'secret' } })
+    );
+
+    expect(result.request?.cookies).toBeUndefined();
+  });
+
+  it('redacts an email found inside a free-text data value', () => {
+    const result = scrubRequestPii(
+      eventWithRequest({ data: { about: 'reach me at me@example.com' } })
+    );
+
+    expect(result.request?.data).toEqual({
+      about: 'reach me at [REDACTED]'
+    });
+  });
+
+  it('redacts a secret-shaped value in a header whose key is not sensitive', () => {
+    const result = scrubRequestPii(
+      eventWithRequest({
+        headers: { 'x-custom': 'Bearer abcdefghijklmnopqrstuvwxyz012345' }
+      })
+    );
+
+    expect(result.request?.headers).toEqual({ 'x-custom': '[REDACTED]' });
+  });
+
+  it('fail-safe redacts a value nested past the depth cap', () => {
+    const buildNested = (depth: number, leaf: unknown): unknown =>
+      depth <= 0 ? leaf : { nested: buildNested(depth - 1, leaf) };
+
+    const result = scrubRequestPii(
+      eventWithRequest({ data: buildNested(9, 'just-a-plain-value') })
+    );
+
+    const serialized = JSON.stringify(result.request?.data);
+    expect(serialized).toContain('[REDACTED]');
+    expect(serialized).not.toContain('just-a-plain-value');
+  });
+
+  it('redacts an email in the exception message and in extra', () => {
+    const event: ErrorEvent = {
+      type: undefined,
+      exception: { values: [{ value: 'failed for user x@y.com' }] },
+      extra: { email: 'z@z.com' }
+    };
+
+    const result = scrubRequestPii(event);
+
+    expect(result.exception?.values?.[0]?.value).toBe(
+      'failed for user [REDACTED]'
+    );
+    expect(result.extra?.email).toBe('[REDACTED]');
+  });
+
+  it('redacts secret-shaped local variables captured in stack frames', () => {
+    const event: ErrorEvent = {
+      type: undefined,
+      exception: {
+        values: [
+          {
+            value: 'boom',
+            stacktrace: {
+              frames: [
+                {
+                  function: 'doThing',
+                  vars: {
+                    jwt_access_token: 'signed-cookie-value',
+                    note: 'holding sk_live_FRAMELEAK here',
+                    userId: 'u1'
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    };
+
+    const result = scrubRequestPii(event);
+    const vars = result.exception?.values?.[0]?.stacktrace?.frames?.[0]?.vars;
+
+    expect(vars?.jwt_access_token).toBe('[REDACTED]');
+    expect(vars?.note).toBe('holding [REDACTED] here');
+    expect(vars?.userId).toBe('u1');
+  });
+
+  it('redacts secret-shaped fields on event.user but keeps id and email', () => {
+    const event: ErrorEvent = {
+      type: undefined,
+      user: { id: 'u1', email: 'donor@example.com', apiKey: 'sk_live_USERLEAK' }
+    };
+
+    const result = scrubRequestPii(event);
+
+    expect(result.user?.id).toBe('u1');
+    expect(result.user?.email).toBe('donor@example.com');
+    expect((result.user as Record<string, unknown>).apiKey).toBe('[REDACTED]');
+  });
+
+  it('strips request.env entirely', () => {
+    const result = scrubRequestPii(
+      eventWithRequest({
+        env: { REMOTE_USER: 'a@b.com', SERVER_SECRET: 'sk_live_ENVLEAK' }
+      })
+    );
+
+    expect(result.request?.env).toBeUndefined();
+  });
+
+  it('redacts secret-shaped data in breadcrumbs', () => {
+    const event: ErrorEvent = {
+      type: undefined,
+      breadcrumbs: [
+        {
+          category: 'http',
+          data: {
+            url: 'https://api.stripe.com?key=sk_live_BCLEAK',
+            token: 'ghp_BCLEAK'
+          }
+        }
+      ]
+    };
+
+    const result = scrubRequestPii(event);
+    const data = result.breadcrumbs?.[0]?.data;
+
+    expect(data?.token).toBe('[REDACTED]');
+    expect(data?.url).toBe('https://api.stripe.com?key=[REDACTED]');
+  });
+
+  it('scrubs a 1MB JWT-prefix body within the ReDoS budget', () => {
+    const result = scrubRequestPii(
+      eventWithRequest({ data: 'eyJ'.repeat(333333) })
+    );
+
+    expect(typeof result.request?.data).toBe('string');
   });
 });
 

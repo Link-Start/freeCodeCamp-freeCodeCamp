@@ -656,6 +656,30 @@ Happy coding!
         expect(response.body).toEqual(updateErrorResponse);
         expect(response.statusCode).toEqual(400);
       });
+
+      test('PUT captures a Sentry Issue and returns 500 when the update fails', async () => {
+        const originalSentry = fastifyTestInstance.Sentry;
+        const captureException = vi.fn();
+        fastifyTestInstance.Sentry = { ...originalSentry, captureException };
+
+        const original = fastifyTestInstance.prisma.user.update;
+        fastifyTestInstance.prisma.user.update = vi
+          .fn()
+          .mockRejectedValue(new Error('db down')) as typeof original;
+
+        const response = await superPut('/update-my-theme').send({
+          theme: 'night'
+        });
+
+        fastifyTestInstance.prisma.user.update = original;
+        fastifyTestInstance.Sentry = originalSentry;
+
+        expect(response.statusCode).toEqual(500);
+        expect(response.body).toEqual(updateErrorResponse);
+        expect(captureException).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ message: 'db down' })
+        );
+      });
     });
 
     describe('/update-my-username', () => {
@@ -871,6 +895,29 @@ Happy coding!
         expect(response.body).toEqual(updateErrorResponse);
         expect(response.statusCode).toEqual(400);
       });
+
+      test('PUT does not log raw social URLs on validation failure', async () => {
+        const spy = vi.spyOn(fastifyTestInstance.log, 'warn');
+        const leakyUrl = 'https://x.com/should-be-github?api_key=super-secret';
+
+        const response = await superPut('/update-my-socials').send({
+          website: '',
+          twitter: '',
+          bluesky: '',
+          linkedin: '',
+          githubProfile: leakyUrl
+        });
+
+        expect(response.statusCode).toEqual(400);
+        const call = spy.mock.calls.find(
+          ([, msg]) => msg === 'Invalid social URL'
+        );
+        expect(call).toBeDefined();
+        const [logObject] = call!;
+        expect(JSON.stringify(logObject)).not.toContain(leakyUrl);
+        expect(JSON.stringify(logObject)).not.toContain('super-secret');
+        expect(logObject).toEqual({ invalidSocials: ['githubProfile'] });
+      });
     });
 
     describe('/update-my-quincy-email', () => {
@@ -967,6 +1014,32 @@ Happy coding!
           type: 'danger'
         });
         expect(response.statusCode).toEqual(400);
+      });
+
+      test('PUT does not log the raw picture URL on validation failure', async () => {
+        const spy = vi.spyOn(fastifyTestInstance.log, 'warn');
+        spy.mockClear();
+        const leakyUrl = 'https://example.com/file.txt?api_key=super-secret';
+
+        const response = await superPut('/update-my-about').send({
+          about: 'Teacher at freeCodeCamp',
+          name: 'Quincy Larson',
+          location: 'USA',
+          picture: leakyUrl
+        });
+
+        expect(response.statusCode).toEqual(400);
+        const call = spy.mock.calls.find(
+          ([, msg]) => msg === 'Invalid picture URL'
+        );
+        expect(call).toBeDefined();
+        const [logObject] = call!;
+        expect(JSON.stringify(logObject)).not.toContain(leakyUrl);
+        expect(JSON.stringify(logObject)).not.toContain('super-secret');
+        expect(logObject).toEqual({
+          hasPicture: true,
+          pictureLength: leakyUrl.length
+        });
       });
 
       test('PUT accepts an image URL with query string', async () => {
