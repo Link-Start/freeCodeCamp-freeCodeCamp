@@ -289,6 +289,7 @@ export const userRoutes: FastifyPluginCallbackTypebox = (
           { err: maybeReportedUsers.error, username },
           'Error finding reported user.'
         );
+        fastify.Sentry?.captureException(maybeReportedUsers.error);
         void reply.code(500);
         return {
           type: 'danger',
@@ -807,6 +808,7 @@ export const userGetRoutes: FastifyPluginCallbackTypebox = (
       );
 
       if (!user?.username) {
+        fastify.Sentry?.captureException(new Error('User has no username'));
         req.log.error('User has no username');
         void res.code(500);
         return { user: {}, result: '' };
