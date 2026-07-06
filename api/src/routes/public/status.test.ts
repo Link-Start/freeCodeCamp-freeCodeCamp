@@ -42,4 +42,23 @@ describe('/status', () => {
 
     spy.mockRestore();
   });
+
+  test('counts a readiness.check_failed metric when the database is unreachable', async () => {
+    const count = vi.fn();
+    const originalSentry = fastifyTestInstance.Sentry;
+    fastifyTestInstance.Sentry = {
+      ...originalSentry,
+      metrics: { ...originalSentry.metrics, count }
+    };
+    const dbSpy = vi
+      .spyOn(fastifyTestInstance.prisma, '$runCommandRaw')
+      .mockRejectedValueOnce(new Error('db down'));
+
+    await superRequest('/status/ready', { method: 'GET' });
+
+    expect(count).toHaveBeenCalledWith('readiness.check_failed', 1);
+
+    dbSpy.mockRestore();
+    fastifyTestInstance.Sentry = originalSentry;
+  });
 });

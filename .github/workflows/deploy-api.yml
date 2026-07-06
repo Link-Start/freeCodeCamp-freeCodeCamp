@@ -73,6 +73,7 @@ jobs:
     secrets:
       DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
       DOCR_NAME: ${{ secrets.DOCR_NAME }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
   deploy:
     name: Deploy to Docker Swarm -- ${{ needs.setup-jobs.outputs.tgt_env_short }}
@@ -189,7 +190,6 @@ jobs:
           # SOCRATES_API_KEY
           # SOCRATES_ENDPOINT
           # STRIPE_SECRET_KEY
-          # LOKI_URL
           # Variables set from SetupJob
           DEPLOYMENT_VERSION: ${{ needs.build.outputs.tagname }}
           DEPLOYMENT_ENV: ${{ needs.setup-jobs.outputs.tgt_env_long }}
@@ -260,7 +260,6 @@ jobs:
               \"SOCRATES_API_KEY\"
               \"SOCRATES_ENDPOINT\"
               \"STRIPE_SECRET_KEY\"
-              \"LOKI_URL\"
               \"DEPLOYMENT_VERSION\"
               \"DEPLOYMENT_TLD\"
               \"DEPLOYMENT_ENV\"
@@ -315,31 +314,17 @@ jobs:
           # shellcheck disable=SC2029 # client-side expansion of REMOTE_SCRIPT is intended
           ssh "$TS_USERNAME@$MACHINE_IP" "$REMOTE_SCRIPT"
 
-      # docker stack deploy exits 0 even after a healthcheck-triggered
-      # rollback, so the live version is probed through the public edge.
-      # Failing here also keeps the Sentry release step from running.
-      - name: Verify rollout
-        env:
-          DEPLOYMENT_VERSION: ${{ needs.build.outputs.tagname }}
-          VERSION_URL: https://api.freecodecamp.${{ needs.setup-jobs.outputs.site_tld }}/status/version
-        run: |
-          for probe in 1 2 3 4 5; do
-            LIVE_VERSION=$(curl -fsS --max-time 10 "$VERSION_URL" | jq -r '.version')
-            echo "probe $probe: $LIVE_VERSION"
-            if [ "$LIVE_VERSION" != "$DEPLOYMENT_VERSION" ]; then
-              echo "live version is not $DEPLOYMENT_VERSION (rolled back?)"
-              exit 1
-            fi
-            sleep 3
-          done
-
-      - name: Sentry release
-        uses: getsentry/action-release@ff07929a6537bac57790c3451cf4d364aca38528 # v3.7.0
+      # Source maps for this release were uploaded (unfinalized) during the
+      # build job. Finalize the release once the stack deploy succeeds.
+      # TODO: gate on a rollback-safe convergence check (docker service state);
+      # the public-edge probe was removed because Cloudflare challenges the CI IP.
+      - name: Finalize Sentry release
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: freecodecamp
           SENTRY_PROJECT: api-fastify
-        with:
-          release: ${{ needs.build.outputs.tagname }}
-          set_commits: skip
-          environment: ${{ needs.setup-jobs.outputs.tgt_env_long }}
+          RELEASE: ${{ needs.build.outputs.tagname }}
+          DEPLOY_ENV: ${{ needs.setup-jobs.outputs.tgt_env_long }}
+        run: |
+          npx --yes @sentry/cli@3.6.0 releases finalize "$RELEASE"
+          npx --yes @sentry/cli@3.6.0 releases deploys "$RELEASE" new -e "$DEPLOY_ENV"

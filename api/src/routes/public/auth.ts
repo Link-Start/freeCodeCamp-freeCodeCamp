@@ -55,6 +55,10 @@ export const mobileAuth0Routes: FastifyPluginCallback = (
         'Could not get email from Auth0 to log in'
       );
 
+      fastify.Sentry?.metrics?.count('auth.mobile_login_attempted', 1, {
+        attributes: { result: 'failure', reason: 'no_email' }
+      });
+
       return reply.status(401).send({
         message: 'We could not log you in, please try again in a moment.',
         type: 'danger'
@@ -66,6 +70,10 @@ export const mobileAuth0Routes: FastifyPluginCallback = (
         'Email is incorrectly formatted for login'
       );
 
+      fastify.Sentry?.metrics?.count('auth.mobile_login_attempted', 1, {
+        attributes: { result: 'failure', reason: 'invalid_format' }
+      });
+
       return reply.status(400).send({
         message: 'The email is incorrectly formatted',
         type: 'danger'
@@ -73,6 +81,10 @@ export const mobileAuth0Routes: FastifyPluginCallback = (
     }
 
     const { id } = await findOrCreateUser(fastify, email);
+
+    fastify.Sentry?.metrics?.count('auth.mobile_login_attempted', 1, {
+      attributes: { result: 'success' }
+    });
 
     reply.setAccessTokenCookie(createAccessToken(id));
   });

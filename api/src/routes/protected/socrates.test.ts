@@ -94,6 +94,13 @@ describe('socratesRoutes', () => {
         });
 
         test('should return hint on successful Socrates API response', async () => {
+          const originalSentry = fastifyTestInstance.Sentry;
+          const count = vi.fn();
+          fastifyTestInstance.Sentry = {
+            ...originalSentry,
+            metrics: { ...originalSentry.metrics, count }
+          };
+
           mockedFetch.mockResolvedValueOnce({
             ok: true,
             status: 200,
@@ -106,11 +113,16 @@ describe('socratesRoutes', () => {
           const response =
             await superPut('/socrates/get-hint').send(validPayload);
 
+          fastifyTestInstance.Sentry = originalSentry;
+
           expect(response.status).toBe(200);
           expect(response.body).toStrictEqual({
             hint: 'Try adding a closing tag.',
             attempts: 1,
             limit: 3
+          });
+          expect(count).toHaveBeenCalledWith('socrates.hint_granted', 1, {
+            attributes: { donorStatus: 'non-donor' }
           });
         });
 
@@ -153,6 +165,13 @@ describe('socratesRoutes', () => {
         });
 
         test('should return 429 when Socrates API rate limits', async () => {
+          const originalSentry = fastifyTestInstance.Sentry;
+          const count = vi.fn();
+          fastifyTestInstance.Sentry = {
+            ...originalSentry,
+            metrics: { ...originalSentry.metrics, count }
+          };
+
           mockedFetch.mockResolvedValueOnce({
             ok: false,
             status: 429,
@@ -162,6 +181,8 @@ describe('socratesRoutes', () => {
           const response =
             await superPut('/socrates/get-hint').send(validPayload);
 
+          fastifyTestInstance.Sentry = originalSentry;
+
           expect(response.status).toBe(429);
           expect(response.body).toStrictEqual({
             error: 'socrates-rate-limit',
@@ -169,9 +190,19 @@ describe('socratesRoutes', () => {
             attempts: 0,
             limit: 3
           });
+          expect(count).toHaveBeenCalledWith('socrates.rate_limit_hit', 1, {
+            attributes: { source: 'upstream', donorStatus: 'non-donor' }
+          });
         });
 
         test('should forward upstream error message on 400', async () => {
+          const originalSentry = fastifyTestInstance.Sentry;
+          const count = vi.fn();
+          fastifyTestInstance.Sentry = {
+            ...originalSentry,
+            metrics: { ...originalSentry.metrics, count }
+          };
+
           mockedFetch.mockResolvedValueOnce({
             ok: false,
             status: 400,
@@ -184,6 +215,8 @@ describe('socratesRoutes', () => {
           const response =
             await superPut('/socrates/get-hint').send(validPayload);
 
+          fastifyTestInstance.Sentry = originalSentry;
+
           expect(response.status).toBe(400);
           expect(response.body).toStrictEqual({
             error: 'Input too short for analysis.',
@@ -191,6 +224,11 @@ describe('socratesRoutes', () => {
             attempts: 0,
             limit: 3
           });
+          expect(count).toHaveBeenCalledWith(
+            'socrates.upstream_call_failed',
+            1,
+            { attributes: { reason: 'bad_status' } }
+          );
         });
 
         test('should use fallback message on 400 with no upstream error', async () => {
@@ -212,7 +250,16 @@ describe('socratesRoutes', () => {
           });
         });
 
-        test('should return 500 on other Socrates API errors', async () => {
+        test('should return 500 and capture on other Socrates API errors', async () => {
+          const originalSentry = fastifyTestInstance.Sentry;
+          const captureException = vi.fn();
+          const count = vi.fn();
+          fastifyTestInstance.Sentry = {
+            ...originalSentry,
+            captureException,
+            metrics: { ...originalSentry.metrics, count }
+          };
+
           mockedFetch.mockResolvedValueOnce({
             ok: false,
             status: 503,
@@ -222,6 +269,8 @@ describe('socratesRoutes', () => {
           const response =
             await superPut('/socrates/get-hint').send(validPayload);
 
+          fastifyTestInstance.Sentry = originalSentry;
+
           expect(response.status).toBe(500);
           expect(response.body).toStrictEqual({
             error: 'socrates-unavailable',
@@ -229,9 +278,28 @@ describe('socratesRoutes', () => {
             attempts: 0,
             limit: 3
           });
+          expect(captureException).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({
+              message: 'Socrates API returned status 503'
+            })
+          );
+          expect(count).toHaveBeenCalledWith(
+            'socrates.upstream_call_failed',
+            1,
+            { attributes: { reason: 'bad_status' } }
+          );
         });
 
-        test('should return 500 when Socrates API returns invalid JSON', async () => {
+        test('should return 500 and capture when Socrates API returns invalid JSON', async () => {
+          const originalSentry = fastifyTestInstance.Sentry;
+          const captureException = vi.fn();
+          const count = vi.fn();
+          fastifyTestInstance.Sentry = {
+            ...originalSentry,
+            captureException,
+            metrics: { ...originalSentry.metrics, count }
+          };
+
           mockedFetch.mockResolvedValueOnce({
             ok: true,
             status: 200,
@@ -241,13 +309,32 @@ describe('socratesRoutes', () => {
           const response =
             await superPut('/socrates/get-hint').send(validPayload);
 
+          fastifyTestInstance.Sentry = originalSentry;
+
           expect(response.status).toBe(500);
           expect(response.body.type).toBe('danger');
           expect(response.body.attempts).toBe(0);
           expect(response.body.limit).toBe(3);
+          expect(captureException).toHaveBeenCalledExactlyOnceWith(
+            expect.any(Error)
+          );
+          expect(count).toHaveBeenCalledWith(
+            'socrates.upstream_call_failed',
+            1,
+            { attributes: { reason: 'invalid_response' } }
+          );
         });
 
-        test('should return 500 when Socrates API returns no hint', async () => {
+        test('should return 500 and capture when Socrates API returns no hint', async () => {
+          const originalSentry = fastifyTestInstance.Sentry;
+          const captureException = vi.fn();
+          const count = vi.fn();
+          fastifyTestInstance.Sentry = {
+            ...originalSentry,
+            captureException,
+            metrics: { ...originalSentry.metrics, count }
+          };
+
           mockedFetch.mockResolvedValueOnce({
             ok: true,
             status: 200,
@@ -257,10 +344,22 @@ describe('socratesRoutes', () => {
           const response =
             await superPut('/socrates/get-hint').send(validPayload);
 
+          fastifyTestInstance.Sentry = originalSentry;
+
           expect(response.status).toBe(500);
           expect(response.body.type).toBe('danger');
           expect(response.body.attempts).toBe(0);
           expect(response.body.limit).toBe(3);
+          expect(captureException).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({
+              message: 'Socrates API did not return a hint'
+            })
+          );
+          expect(count).toHaveBeenCalledWith(
+            'socrates.upstream_call_failed',
+            1,
+            { attributes: { reason: 'missing_hint' } }
+          );
         });
 
         test('should return 500 when fetch throws', async () => {
@@ -276,6 +375,66 @@ describe('socratesRoutes', () => {
             attempts: 0,
             limit: 3
           });
+        });
+
+        test('should not capture a fetch network failure', async () => {
+          const originalSentry = fastifyTestInstance.Sentry;
+          const captureException = vi.fn();
+          const count = vi.fn();
+          fastifyTestInstance.Sentry = {
+            ...originalSentry,
+            captureException,
+            metrics: { ...originalSentry.metrics, count }
+          };
+
+          const networkError = Object.assign(new TypeError('fetch failed'), {
+            cause: Object.assign(new Error('connect ECONNREFUSED'), {
+              code: 'ECONNREFUSED'
+            })
+          });
+          mockedFetch.mockRejectedValueOnce(networkError);
+
+          const response =
+            await superPut('/socrates/get-hint').send(validPayload);
+
+          expect(response.status).toBe(500);
+          expect(captureException).not.toHaveBeenCalled();
+          expect(count).toHaveBeenCalledWith(
+            'socrates.upstream_call_failed',
+            1,
+            { attributes: { reason: 'network' } }
+          );
+
+          fastifyTestInstance.Sentry = originalSentry;
+        });
+
+        test('should capture a genuine TypeError bug from the handler', async () => {
+          const originalSentry = fastifyTestInstance.Sentry;
+          const captureException = vi.fn();
+          const count = vi.fn();
+          fastifyTestInstance.Sentry = {
+            ...originalSentry,
+            captureException,
+            metrics: { ...originalSentry.metrics, count }
+          };
+
+          const bugError = new TypeError(
+            "Cannot read properties of undefined (reading 'foo')"
+          );
+          mockedFetch.mockRejectedValueOnce(bugError);
+
+          const response =
+            await superPut('/socrates/get-hint').send(validPayload);
+
+          expect(response.status).toBe(500);
+          expect(captureException).toHaveBeenCalledExactlyOnceWith(bugError);
+          expect(count).toHaveBeenCalledWith(
+            'socrates.upstream_call_failed',
+            1,
+            { attributes: { reason: 'exception' } }
+          );
+
+          fastifyTestInstance.Sentry = originalSentry;
         });
       });
 
@@ -325,6 +484,13 @@ describe('socratesRoutes', () => {
         });
 
         test('should return 429 when non-donor exceeds 3 hints/day', async () => {
+          const originalSentry = fastifyTestInstance.Sentry;
+          const count = vi.fn();
+          fastifyTestInstance.Sentry = {
+            ...originalSentry,
+            metrics: { ...originalSentry.metrics, count }
+          };
+
           mockedFetch.mockResolvedValue({
             ok: true,
             status: 200,
@@ -338,11 +504,16 @@ describe('socratesRoutes', () => {
           const response =
             await superPut('/socrates/get-hint').send(validPayload);
 
+          fastifyTestInstance.Sentry = originalSentry;
+
           expect(response.status).toBe(429);
           expect(response.body.attempts).toBe(3);
           expect(response.body.limit).toBe(3);
           expect(response.body.error).toBe('socrates-daily-limit');
           expect(mockedFetch).toHaveBeenCalledTimes(3);
+          expect(count).toHaveBeenCalledWith('socrates.rate_limit_hit', 1, {
+            attributes: { source: 'local', donorStatus: 'non-donor' }
+          });
         });
 
         test('should not inflate count beyond limit on repeated 429s', async () => {

@@ -48,6 +48,7 @@ import {
 } from './utils/env.js';
 import { isObjectID } from './utils/validation.js';
 import { bindRouteToLogger, genReqId, getLogger } from './utils/logger.js';
+import { recordHttpMetrics } from './utils/http-metrics.js';
 import {
   examEnvironmentOpenRoutes,
   examEnvironmentValidatedTokenRoutes
@@ -110,6 +111,7 @@ export const build = async (
   fastify.setValidatorCompiler(({ schema }) => ajv.compile(schema));
 
   fastify.addHook('onRequest', bindRouteToLogger);
+  fastify.addHook('onResponse', recordHttpMetrics);
 
   void fastify.register(redirectWithMessage);
   void fastify.register(security);

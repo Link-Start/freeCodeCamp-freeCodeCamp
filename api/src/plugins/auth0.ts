@@ -144,6 +144,10 @@ export const auth0Client: FastifyPluginCallbackTypebox = fp(
           req.log.warn(error, 'Auth failed: invalid state');
         } else if (Value.Check(Auth0ErrorSchema, error)) {
           const errorType = error.data.payload.error;
+          const expectedErrorTypes = ['invalid_grant', 'access_denied'];
+          if (!expectedErrorTypes.includes(errorType)) {
+            fastify.Sentry?.captureException(error);
+          }
           req.log.error(error, 'Auth failed: ' + errorType);
         } else {
           fastify.Sentry?.captureException(error);
@@ -182,6 +186,7 @@ export const auth0Client: FastifyPluginCallbackTypebox = fp(
           // This is a specific error from the @fastify/oauth2 plugin.
           const innerError = error.innerError as Error;
           innerError.message = `Auth0 userinfo error: ${innerError.message}`;
+          fastify.Sentry?.captureException(innerError);
           req.log.error(innerError, 'Failed to get userinfo from Auth0');
         } else {
           fastify.Sentry?.captureException(error);
@@ -196,6 +201,10 @@ export const auth0Client: FastifyPluginCallbackTypebox = fp(
       const { id } = await findOrCreateUser(fastify, email);
 
       reply.setAccessTokenCookie(createAccessToken(id));
+
+      fastify.Sentry?.metrics?.count('auth.login_succeeded', 1, {
+        attributes: { provider: 'auth0' }
+      });
 
       const returnPath = new URL(returnTo).pathname;
       const returnURL = returnPath === '/' ? `${origin}/learn` : returnTo;

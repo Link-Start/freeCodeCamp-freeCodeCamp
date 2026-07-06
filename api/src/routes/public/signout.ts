@@ -22,6 +22,7 @@ export const signoutRoute: FastifyPluginCallback = (
     },
     async (req, reply) => {
       void reply.clearOurCookies();
+      fastify.Sentry?.metrics?.count('auth.signed_out', 1);
       req.log.info({ audit: true }, 'User signed out');
 
       await reply.send({});

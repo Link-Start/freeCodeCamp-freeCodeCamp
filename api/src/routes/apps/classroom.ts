@@ -36,7 +36,8 @@ export const classroomRoutes: FastifyPluginCallbackTypebox = (
           userId: user.id
         });
       } catch (error) {
-        fastify.log.error(error);
+        fastify.Sentry?.captureException(error);
+        request.log.error(error, 'Failed to retrieve user id');
         return reply.code(500).send({ error: 'Failed to retrieve user id' });
       }
     }
@@ -78,7 +79,8 @@ export const classroomRoutes: FastifyPluginCallbackTypebox = (
           data: userData
         });
       } catch (error) {
-        fastify.log.error(error);
+        fastify.Sentry?.captureException(error);
+        request.log.error(error, 'Failed to retrieve user data');
         return reply.code(500).send({ error: 'Failed to retrieve user data' });
       }
     }

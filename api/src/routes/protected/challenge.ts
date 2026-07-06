@@ -112,7 +112,12 @@ export const challengeRoutes: FastifyPluginCallbackTypebox = (
       if (challengeType === challengeTypes.backEndProject) {
         if (!solution || !validator.default.isURL(githubLink + '')) {
           req.log.warn(
-            { solution, githubLink },
+            {
+              hasSolution: !!solution,
+              solutionLength: solution.length,
+              hasGithubLink: !!githubLink,
+              githubLinkLength: githubLink?.length
+            },
             'Invalid backEndProject submission'
           );
           return void reply.code(403).send({
@@ -121,7 +126,10 @@ export const challengeRoutes: FastifyPluginCallbackTypebox = (
           });
         }
       } else if (solution && !validator.default.isURL(solution + '')) {
-        req.log.warn({ solution }, 'Invalid solution URL');
+        req.log.warn(
+          { hasSolution: !!solution, solutionLength: solution.length },
+          'Invalid solution URL'
+        );
         return void reply.code(403).send({
           type: 'error',
           message: 'That does not appear to be a valid challenge submission.'
@@ -164,6 +172,12 @@ export const challengeRoutes: FastifyPluginCallbackTypebox = (
         projectId,
         challenge
       );
+
+      fastify.Sentry?.metrics?.count('challenge.completed', 1, {
+        attributes: {
+          result: alreadyCompleted ? 'already_completed' : 'completed'
+        }
+      });
 
       reply.send({
         alreadyCompleted,
@@ -225,6 +239,12 @@ export const challengeRoutes: FastifyPluginCallbackTypebox = (
         req.body.id,
         completedChallenge
       );
+
+      fastify.Sentry?.metrics?.count('challenge.completed', 1, {
+        attributes: {
+          result: alreadyCompleted ? 'already_completed' : 'completed'
+        }
+      });
 
       return {
         alreadyCompleted,
@@ -497,6 +517,7 @@ export const challengeRoutes: FastifyPluginCallbackTypebox = (
           validGeneratedExamSchema.error,
           'Error validating generated exam'
         );
+        fastify.Sentry?.captureException(validGeneratedExamSchema.error);
         void reply.code(500);
         return { error: 'An error occurred trying to randomize the exam.' };
       }
@@ -551,6 +572,9 @@ export const challengeRoutes: FastifyPluginCallbackTypebox = (
             { hasMsUser: !!msUser },
             'User tried to submit a Microsoft trophy challenge without a Microsoft username'
           );
+          fastify.Sentry?.metrics?.count('ms_trophy.verify_completed', 1, {
+            attributes: { result: 'no_ms_username' }
+          });
           return reply
             .code(403)
             .send({ type: 'error', message: 'flash.ms.trophy.err-1' });
@@ -568,6 +592,9 @@ export const challengeRoutes: FastifyPluginCallbackTypebox = (
 
         if (msTrophyStatus.type === 'error') {
           req.log.warn('Error verifying trophy with Microsoft');
+          fastify.Sentry?.metrics?.count('ms_trophy.verify_completed', 1, {
+            attributes: { result: 'verify_failed' }
+          });
           return reply.code(403).send(msTrophyStatus);
         }
 
@@ -592,6 +619,12 @@ export const challengeRoutes: FastifyPluginCallbackTypebox = (
             challengeId,
             completedChallenge
           );
+
+        fastify.Sentry?.metrics?.count('ms_trophy.verify_completed', 1, {
+          attributes: {
+            result: alreadyCompleted ? 'already_claimed' : 'verified'
+          }
+        });
 
         reply.send({
           alreadyCompleted,
@@ -675,6 +708,9 @@ export const challengeRoutes: FastifyPluginCallbackTypebox = (
             { examId: id, validationError: validExamFromDbSchema.error },
             'Error validating exam from database'
           );
+          fastify.Sentry?.captureException(
+            new Error(`Exam ${id} failed database schema validation`)
+          );
           void reply.code(500);
           return {
             error:
@@ -723,6 +759,7 @@ export const challengeRoutes: FastifyPluginCallbackTypebox = (
             validExamResults.error,
             'Error validating generated exam results'
           );
+          fastify.Sentry?.captureException(validExamResults.error);
           void reply.code(500);
           return {
             error: 'An error occurred validating the submitted exam.'
@@ -1262,6 +1299,12 @@ async function postModernChallengeCompleted(
 
   const { alreadyCompleted, userSavedChallenges: savedChallenges } =
     await updateUserChallengeData(fastify, user, id, completedChallenge);
+
+  fastify.Sentry?.metrics?.count('challenge.completed', 1, {
+    attributes: {
+      result: alreadyCompleted ? 'already_completed' : 'completed'
+    }
+  });
 
   return {
     alreadyCompleted,

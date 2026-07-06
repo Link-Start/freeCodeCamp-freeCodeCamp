@@ -21,6 +21,18 @@ vi.mock('../helpers/challenge-helpers', async () => {
   };
 });
 
+vi.mock('../../utils/exam.js', async () => {
+  const originalModule = await vi.importActual<
+    typeof import('../../utils/exam.js')
+  >('../../utils/exam.js');
+
+  return {
+    __esModule: true,
+    ...originalModule,
+    generateRandomExam: vi.fn(originalModule.generateRandomExam)
+  };
+});
+
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 import { omit } from 'lodash-es';
@@ -45,6 +57,7 @@ import {
   completedExamChallengeAllCorrect,
   completedTrophyChallenges,
   examChallengeId,
+  examJson,
   mockResultsZeroCorrect,
   mockResultsTwoCorrect,
   mockResultsAllCorrect,
@@ -58,8 +71,10 @@ import { Answer } from '../../utils/exam-types.js';
 import type { getSessionUser } from '../../schemas/user/get-session-user.js';
 import { verifyTrophyWithMicrosoft } from '../helpers/challenge-helpers.js';
 import { encodeUserToken } from '../../utils/tokens.js';
+import { generateRandomExam } from '../../utils/exam.js';
 
 const mockVerifyTrophyWithMicrosoft = vi.mocked(verifyTrophyWithMicrosoft);
+const mockGenerateRandomExam = vi.mocked(generateRandomExam);
 
 const EXISTING_COMPLETED_DATE = new Date('2024-11-08').getTime();
 const DATE_NOW = Date.now();
@@ -574,6 +589,40 @@ describe('challengeRoutes', () => {
           expect(response_2.statusCode).toBe(403);
         });
 
+        test('POST does not log the raw solution or githubLink on backEndProject validation failure', async () => {
+          const spy = vi.spyOn(fastifyTestInstance.log, 'warn');
+          spy.mockClear();
+
+          const leakySolution =
+            'https://example.com/solution?api_key=super-secret';
+          const leakyGithubLink = 'not-a-valid-url-with-token-abc123';
+
+          const response = await superPost('/project-completed').send({
+            id: id1,
+            challengeType: challengeTypes.backEndProject,
+            solution: leakySolution,
+            githubLink: leakyGithubLink
+          });
+
+          expect(response.statusCode).toBe(403);
+
+          const call = spy.mock.calls.find(
+            ([, msg]) => msg === 'Invalid backEndProject submission'
+          );
+          expect(call).toBeDefined();
+          const [logObject] = call!;
+          expect(JSON.stringify(logObject)).not.toContain(leakySolution);
+          expect(JSON.stringify(logObject)).not.toContain(leakyGithubLink);
+          expect(JSON.stringify(logObject)).not.toContain('super-secret');
+          expect(JSON.stringify(logObject)).not.toContain('token-abc123');
+          expect(logObject).toEqual({
+            hasSolution: true,
+            solutionLength: leakySolution.length,
+            hasGithubLink: true,
+            githubLinkLength: leakyGithubLink.length
+          });
+        });
+
         test('POST rejects CodeRoad/CodeAlly projects when the user has not completed the required challenges', async () => {
           const response = await superPost('/project-completed').send({
             id: id1, // not a codeally challenge id, but does not matter
@@ -620,6 +669,13 @@ describe('challengeRoutes', () => {
 
         test('POST accepts CodeRoad/CodeAlly projects when the user has completed the required challenges', async () => {
           const now = Date.now();
+          const count = vi.fn();
+          const originalSentry = fastifyTestInstance.Sentry;
+          fastifyTestInstance.Sentry = {
+            ...originalSentry,
+            metrics: { ...originalSentry.metrics, count }
+          };
+
           const response =
             await superPost('/project-completed').send(codeallyProject);
 
@@ -650,6 +706,10 @@ describe('challengeRoutes', () => {
           });
 
           expect(response.statusCode).toBe(200);
+          expect(count).toHaveBeenCalledWith('challenge.completed', 1, {
+            attributes: { result: 'completed' }
+          });
+          fastifyTestInstance.Sentry = originalSentry;
         });
 
         test('POST accepts backend projects', async () => {
@@ -794,6 +854,12 @@ describe('challengeRoutes', () => {
 
         test('POST accepts backend challenges', async () => {
           const now = Date.now();
+          const count = vi.fn();
+          const originalSentry = fastifyTestInstance.Sentry;
+          fastifyTestInstance.Sentry = {
+            ...originalSentry,
+            metrics: { ...originalSentry.metrics, count }
+          };
 
           const response = await superPost('/backend-challenge-completed').send(
             backendChallengeBody1
@@ -822,6 +888,10 @@ describe('challengeRoutes', () => {
             completedDate
           });
           expect(response.statusCode).toBe(200);
+          expect(count).toHaveBeenCalledWith('challenge.completed', 1, {
+            attributes: { result: 'completed' }
+          });
+          fastifyTestInstance.Sentry = originalSentry;
         });
 
         test('POST correctly handles multiple requests', async () => {
@@ -937,6 +1007,12 @@ describe('challengeRoutes', () => {
         // HTML(0), JS(1), Modern(6), Video(11), The Odin Project(15)
         test('POST accepts challenges without files present', async () => {
           const now = Date.now();
+          const count = vi.fn();
+          const originalSentry = fastifyTestInstance.Sentry;
+          fastifyTestInstance.Sentry = {
+            ...originalSentry,
+            metrics: { ...originalSentry.metrics, count }
+          };
 
           const response = await superPost('/modern-challenge-completed').send(
             HtmlChallengeBody
@@ -966,6 +1042,10 @@ describe('challengeRoutes', () => {
             completedDate,
             savedChallenges: []
           });
+          expect(count).toHaveBeenCalledWith('challenge.completed', 1, {
+            attributes: { result: 'completed' }
+          });
+          fastifyTestInstance.Sentry = originalSentry;
         });
 
         // JS Project(5), Multi-file Cert Project(14)
@@ -1780,6 +1860,33 @@ describe('challengeRoutes', () => {
 
           expect(response.statusCode).toBe(200);
         });
+
+        test('GET captures unexpected errors when the generated exam fails validation', async () => {
+          const originalSentry = fastifyTestInstance.Sentry;
+          const captureException = vi.fn();
+          fastifyTestInstance.Sentry = {
+            ...originalSentry,
+            captureException
+          };
+
+          mockGenerateRandomExam.mockReturnValueOnce(
+            Array.from({ length: 3 }, (_, i) => ({
+              id: 'abcdefghij',
+              question: `Malformed question ${i}`,
+              answers: [{ id: 'abcdefghij', answer: 'Only one answer' }]
+            }))
+          );
+
+          const response = await superGet('/exam/647e22d18acb466c97ccbef8');
+
+          expect(response.body).toStrictEqual({
+            error: 'An error occurred trying to randomize the exam.'
+          });
+          expect(response.statusCode).toBe(500);
+          expect(captureException).toHaveBeenCalledOnce();
+
+          fastifyTestInstance.Sentry = originalSentry;
+        });
       });
       describe('/ms-trophy-challenge-completed', () => {
         const msUserId = 'abc123';
@@ -1853,15 +1960,38 @@ describe('challengeRoutes', () => {
           });
 
           test('POST rejects requests if the user does not have a Microsoft username', async () => {
+            const count = vi.fn();
+            const originalSentry = fastifyTestInstance.Sentry;
+            fastifyTestInstance.Sentry = {
+              ...originalSentry,
+              metrics: { ...originalSentry.metrics, count }
+            };
+
             const res = await superPost('/ms-trophy-challenge-completed').send({
               id: trophyChallengeId
             });
 
             expect(res.body).toStrictEqual(userHasNotLinkedTheirAccount);
             expect(res.statusCode).toBe(403);
+            expect(count).toHaveBeenCalledWith(
+              'ms_trophy.verify_completed',
+              1,
+              {
+                attributes: { result: 'no_ms_username' }
+              }
+            );
+
+            fastifyTestInstance.Sentry = originalSentry;
           });
 
           test("POST rejects requests if Microsoft's api responds with an error", async () => {
+            const count = vi.fn();
+            const originalSentry = fastifyTestInstance.Sentry;
+            fastifyTestInstance.Sentry = {
+              ...originalSentry,
+              metrics: { ...originalSentry.metrics, count }
+            };
+
             const msUsername = 'ANRandom';
             await createMSUsernameRecord(msUsername);
             // This can be any error that the route can serialize. Other than
@@ -1884,6 +2014,15 @@ describe('challengeRoutes', () => {
 
             expect(res.body).toStrictEqual(verifyError);
             expect(res.statusCode).toBe(403);
+            expect(count).toHaveBeenCalledWith(
+              'ms_trophy.verify_completed',
+              1,
+              {
+                attributes: { result: 'verify_failed' }
+              }
+            );
+
+            fastifyTestInstance.Sentry = originalSentry;
           });
 
           test('POST handles unexpected errors', async () => {
@@ -1912,6 +2051,13 @@ describe('challengeRoutes', () => {
           });
 
           test('POST updates the user record with a new completed challenge', async () => {
+            const count = vi.fn();
+            const originalSentry = fastifyTestInstance.Sentry;
+            fastifyTestInstance.Sentry = {
+              ...originalSentry,
+              metrics: { ...originalSentry.metrics, count }
+            };
+
             mockVerifyTrophyWithMicrosoft.mockImplementationOnce(() =>
               Promise.resolve({
                 type: 'success',
@@ -1951,6 +2097,15 @@ describe('challengeRoutes', () => {
                 }
               ]
             });
+            expect(count).toHaveBeenCalledWith(
+              'ms_trophy.verify_completed',
+              1,
+              {
+                attributes: { result: 'verified' }
+              }
+            );
+
+            fastifyTestInstance.Sentry = originalSentry;
           });
 
           test('POST correctly handles multiple requests', async () => {
@@ -2238,6 +2393,54 @@ describe('challengeRoutes', () => {
 
           expect(response.body).toStrictEqual({
             error: `An error occurred trying to submit your exam.`
+          });
+          expect(response.statusCode).toBe(500);
+          expect(captureException).toHaveBeenCalledOnce();
+
+          fastifyTestInstance.Sentry = originalSentry;
+        });
+
+        test('POST captures an exception when the exam from the database fails schema validation', async () => {
+          const originalSentry = fastifyTestInstance.Sentry;
+          const captureException = vi.fn();
+          fastifyTestInstance.Sentry = {
+            ...originalSentry,
+            captureException
+          };
+
+          const examSpy = vi
+            .spyOn(fastifyTestInstance.prisma.exam, 'findUnique')
+            .mockResolvedValueOnce({
+              ...examJson,
+              numberOfQuestionsInExam: 999
+            } as never);
+
+          const response = await superRequest('/exam-challenge-completed', {
+            method: 'POST',
+            setCookies
+          }).send({
+            id: examChallengeId,
+            challengeType: 17,
+            userCompletedExam: {
+              examTimeInSeconds: 111,
+              userExamQuestions: [
+                {
+                  id: 'q-id',
+                  question: '?',
+                  answer: {
+                    id: 'a-id',
+                    answer: 'a'
+                  }
+                }
+              ]
+            }
+          });
+
+          examSpy.mockRestore();
+
+          expect(response.body).toStrictEqual({
+            error:
+              'An error occurred validating the exam information from the database.'
           });
           expect(response.statusCode).toBe(500);
           expect(captureException).toHaveBeenCalledOnce();

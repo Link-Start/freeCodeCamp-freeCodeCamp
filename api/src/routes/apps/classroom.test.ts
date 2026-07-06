@@ -126,7 +126,11 @@ describe('classroom routes', () => {
         expect(res.body).toStrictEqual({ userId: defaultUserId });
       });
 
-      test('returns 500 when the database query fails', async () => {
+      test('returns 500 and captures when the database query fails', async () => {
+        const originalSentry = fastifyTestInstance.Sentry;
+        const captureException = vi.fn();
+        fastifyTestInstance.Sentry = { ...originalSentry, captureException };
+
         const original = fastifyTestInstance.prisma.user.findFirst;
         fastifyTestInstance.prisma.user.findFirst = vi
           .fn()
@@ -137,11 +141,15 @@ describe('classroom routes', () => {
         });
 
         fastifyTestInstance.prisma.user.findFirst = original;
+        fastifyTestInstance.Sentry = originalSentry;
 
         expect(res.status).toBe(500);
         expect(res.body).toStrictEqual({
           error: 'Failed to retrieve user id'
         });
+        expect(captureException).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ message: 'test' })
+        );
       });
     });
 
@@ -272,7 +280,11 @@ describe('classroom routes', () => {
         expect(Object.keys(challenge)).toStrictEqual(['id', 'completedDate']);
       });
 
-      test('returns 500 when the database query fails', async () => {
+      test('returns 500 and captures when the database query fails', async () => {
+        const originalSentry = fastifyTestInstance.Sentry;
+        const captureException = vi.fn();
+        fastifyTestInstance.Sentry = { ...originalSentry, captureException };
+
         const original = fastifyTestInstance.prisma.user.findMany;
         fastifyTestInstance.prisma.user.findMany = vi
           .fn()
@@ -283,11 +295,15 @@ describe('classroom routes', () => {
         });
 
         fastifyTestInstance.prisma.user.findMany = original;
+        fastifyTestInstance.Sentry = originalSentry;
 
         expect(res.status).toBe(500);
         expect(res.body).toStrictEqual({
           error: 'Failed to retrieve user data'
         });
+        expect(captureException).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ message: 'test' })
+        );
       });
     });
   });

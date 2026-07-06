@@ -101,6 +101,9 @@ export const userRoutes: FastifyPluginCallbackTypebox = (
         await fastify.prisma.user.delete({
           where: { id: req.user!.id }
         });
+        fastify.Sentry?.metrics?.count('account.deleted', 1, {
+          attributes: { endpoint: '/account/delete' }
+        });
       } catch (err) {
         if (
           err instanceof PrismaClientKnownRequestError &&
@@ -148,6 +151,9 @@ export const userRoutes: FastifyPluginCallbackTypebox = (
         });
         await fastify.prisma.user.delete({
           where: { id: req.user.id }
+        });
+        fastify.Sentry?.metrics?.count('account.deleted', 1, {
+          attributes: { endpoint: '/users/:userId' }
         });
       } catch (err) {
         // Whilst this is behind auth, this should never happen
@@ -289,6 +295,7 @@ export const userRoutes: FastifyPluginCallbackTypebox = (
           { err: maybeReportedUsers.error, username },
           'Error finding reported user.'
         );
+        fastify.Sentry?.captureException(maybeReportedUsers.error);
         void reply.code(500);
         return {
           type: 'danger',
@@ -407,6 +414,9 @@ export const userRoutes: FastifyPluginCallbackTypebox = (
         const { userName } = (await msApiRes.json()) as { userName: string };
 
         if (!userName) {
+          fastify.Sentry?.captureException(
+            new Error('No userName found in Microsoft transcript response')
+          );
           req.log.error('No userName found in Microsoft transcript response');
           return reply.status(500).send({
             type: 'error',
@@ -508,6 +518,10 @@ export const userRoutes: FastifyPluginCallbackTypebox = (
 
         await fastify.prisma.survey.create({
           data: newSurvey
+        });
+
+        fastify.Sentry?.metrics?.count('survey.submitted', 1, {
+          attributes: { surveyTitle: title }
         });
 
         return {
@@ -807,6 +821,7 @@ export const userGetRoutes: FastifyPluginCallbackTypebox = (
       );
 
       if (!user?.username) {
+        fastify.Sentry?.captureException(new Error('User has no username'));
         req.log.error('User has no username');
         void res.code(500);
         return { user: {}, result: '' };

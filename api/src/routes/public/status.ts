@@ -30,6 +30,7 @@ export const statusRoute: FastifyPluginCallbackTypebox = (
       await fastify.prisma.$runCommandRaw({ ping: 1 });
       return { status: 'ready' };
     } catch (err) {
+      fastify.Sentry?.metrics?.count('readiness.check_failed', 1);
       req.log.error(err, 'Readiness check failed: database unreachable');
       return reply.code(503).send({ status: 'unavailable' });
     }

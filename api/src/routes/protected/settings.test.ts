@@ -229,25 +229,53 @@ describe('settingRoutes', () => {
       });
 
       test('should reject requests which have an invalid email param', async () => {
+        const count = vi.fn();
+        const originalSentry = fastifyTestInstance.Sentry;
+        fastifyTestInstance.Sentry = {
+          ...originalSentry,
+          metrics: { ...originalSentry.metrics, count }
+        };
+
         const res = await superGet(
           `/confirm-email?email=${notEmail}&token=${validToken}`
         );
 
+        fastifyTestInstance.Sentry = originalSentry;
+
         expect(res.headers.location).toBe(
           `${HOME_LOCATION}?` + formatMessage(defaultErrorMessage)
         );
         expect(res.status).toBe(302);
+        expect(count).toHaveBeenCalledWith(
+          'settings.email_confirm_rejected',
+          1,
+          { attributes: { reason: 'invalid_email' } }
+        );
       });
 
       test('should reject requests when the auth token is not in the database', async () => {
+        const count = vi.fn();
+        const originalSentry = fastifyTestInstance.Sentry;
+        fastifyTestInstance.Sentry = {
+          ...originalSentry,
+          metrics: { ...originalSentry.metrics, count }
+        };
+
         const res = await superGet(
           `/confirm-email?email=${encodedEmail}&token=${validButMissingToken}`
         );
 
+        fastifyTestInstance.Sentry = originalSentry;
+
         expect(res.headers.location).toBe(
           `${HOME_LOCATION}?` + formatMessage(defaultErrorMessage)
         );
         expect(res.status).toBe(302);
+        expect(count).toHaveBeenCalledWith(
+          'settings.email_confirm_rejected',
+          1,
+          { attributes: { reason: 'no_token' } }
+        );
       });
 
       test('should reject requests when the auth token exists, but the user does not', async () => {
@@ -264,15 +292,28 @@ describe('settingRoutes', () => {
       test('should reject requests when the target user does not match the signed in user', async () => {
         // The signed in user is the default (foo@bar.com), but the token is for
         // a different user (another@user.com).
+        const count = vi.fn();
+        const originalSentry = fastifyTestInstance.Sentry;
+        fastifyTestInstance.Sentry = {
+          ...originalSentry,
+          metrics: { ...originalSentry.metrics, count }
+        };
 
         const res = await superGet(
           `/confirm-email?email=${encodedEmail}&token=${tokenWithDifferentUser}`
         );
 
+        fastifyTestInstance.Sentry = originalSentry;
+
         expect(res.headers.location).toBe(
           `${HOME_LOCATION}?` + formatMessage(defaultErrorMessage)
         );
         expect(res.status).toBe(302);
+        expect(count).toHaveBeenCalledWith(
+          'settings.email_confirm_rejected',
+          1,
+          { attributes: { reason: 'user_mismatch' } }
+        );
       });
 
       // TODO(Post-MVP): there's no need to keep the auth token around if,
@@ -287,20 +328,43 @@ describe('settingRoutes', () => {
           data: { newEmail: 'an@oth.er' }
         });
 
+        const count = vi.fn();
+        const originalSentry = fastifyTestInstance.Sentry;
+        fastifyTestInstance.Sentry = {
+          ...originalSentry,
+          metrics: { ...originalSentry.metrics, count }
+        };
+
         const res = await superGet(
           `/confirm-email?email=${encodedEmail}&token=${validToken}`
         );
+
+        fastifyTestInstance.Sentry = originalSentry;
 
         expect(res.headers.location).toBe(
           `${HOME_LOCATION}?` + formatMessage(defaultErrorMessage)
         );
         expect(res.status).toBe(302);
+        expect(count).toHaveBeenCalledWith(
+          'settings.email_confirm_rejected',
+          1,
+          { attributes: { reason: 'email_mismatch' } }
+        );
       });
 
       test('should reject requests if the auth token has expired', async () => {
+        const count = vi.fn();
+        const originalSentry = fastifyTestInstance.Sentry;
+        fastifyTestInstance.Sentry = {
+          ...originalSentry,
+          metrics: { ...originalSentry.metrics, count }
+        };
+
         const res = await superGet(
           `/confirm-email?email=${encodedEmail}&token=${expiredToken}`
         );
+
+        fastifyTestInstance.Sentry = originalSentry;
 
         expect(res.headers.location).toBe(
           `${HOME_LOCATION}?` +
@@ -311,9 +375,21 @@ describe('settingRoutes', () => {
             })
         );
         expect(res.status).toBe(302);
+        expect(count).toHaveBeenCalledWith(
+          'settings.email_confirm_rejected',
+          1,
+          { attributes: { reason: 'expired' } }
+        );
       });
 
       test('should update the user email', async () => {
+        const count = vi.fn();
+        const originalSentry = fastifyTestInstance.Sentry;
+        fastifyTestInstance.Sentry = {
+          ...originalSentry,
+          metrics: { ...originalSentry.metrics, count }
+        };
+
         const res = await superGet(
           `/confirm-email?email=${encodedEmail}&token=${validToken}`
         );
@@ -321,10 +397,13 @@ describe('settingRoutes', () => {
           where: { id: defaultUserId }
         });
 
+        fastifyTestInstance.Sentry = originalSentry;
+
         expect(res.headers.location).toBe(
           `${HOME_LOCATION}?` + formatMessage(successMessage)
         );
         expect(user.email).toBe(newEmail);
+        expect(count).toHaveBeenCalledWith('settings.email_confirmed', 1);
       });
 
       test('should clean up the user record', async () => {
@@ -432,9 +511,18 @@ describe('settingRoutes', () => {
         });
       });
       test('PUT returns 200 status code with "info" message', async () => {
+        const count = vi.fn();
+        const originalSentry = fastifyTestInstance.Sentry;
+        fastifyTestInstance.Sentry = {
+          ...originalSentry,
+          metrics: { ...originalSentry.metrics, count }
+        };
+
         const response = await superPut('/update-my-email').send({
           email: 'foo@foo.com'
         });
+
+        fastifyTestInstance.Sentry = originalSentry;
 
         expect(response.body).toEqual({
           message:
@@ -442,6 +530,10 @@ describe('settingRoutes', () => {
           type: 'info'
         });
         expect(response.statusCode).toEqual(200);
+        expect(count).toHaveBeenCalledWith(
+          'settings.email_change_requested',
+          1
+        );
       });
 
       test("PUT updates the user's record in preparation for receiving auth email", async () => {
@@ -655,6 +747,30 @@ Happy coding!
 
         expect(response.body).toEqual(updateErrorResponse);
         expect(response.statusCode).toEqual(400);
+      });
+
+      test('PUT captures a Sentry Issue and returns 500 when the update fails', async () => {
+        const originalSentry = fastifyTestInstance.Sentry;
+        const captureException = vi.fn();
+        fastifyTestInstance.Sentry = { ...originalSentry, captureException };
+
+        const original = fastifyTestInstance.prisma.user.update;
+        fastifyTestInstance.prisma.user.update = vi
+          .fn()
+          .mockRejectedValue(new Error('db down')) as typeof original;
+
+        const response = await superPut('/update-my-theme').send({
+          theme: 'night'
+        });
+
+        fastifyTestInstance.prisma.user.update = original;
+        fastifyTestInstance.Sentry = originalSentry;
+
+        expect(response.statusCode).toEqual(500);
+        expect(response.body).toEqual(updateErrorResponse);
+        expect(captureException).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ message: 'db down' })
+        );
       });
     });
 
@@ -871,6 +987,29 @@ Happy coding!
         expect(response.body).toEqual(updateErrorResponse);
         expect(response.statusCode).toEqual(400);
       });
+
+      test('PUT does not log raw social URLs on validation failure', async () => {
+        const spy = vi.spyOn(fastifyTestInstance.log, 'warn');
+        const leakyUrl = 'https://x.com/should-be-github?api_key=super-secret';
+
+        const response = await superPut('/update-my-socials').send({
+          website: '',
+          twitter: '',
+          bluesky: '',
+          linkedin: '',
+          githubProfile: leakyUrl
+        });
+
+        expect(response.statusCode).toEqual(400);
+        const call = spy.mock.calls.find(
+          ([, msg]) => msg === 'Invalid social URL'
+        );
+        expect(call).toBeDefined();
+        const [logObject] = call!;
+        expect(JSON.stringify(logObject)).not.toContain(leakyUrl);
+        expect(JSON.stringify(logObject)).not.toContain('super-secret');
+        expect(logObject).toEqual({ invalidSocials: ['githubProfile'] });
+      });
     });
 
     describe('/update-my-quincy-email', () => {
@@ -967,6 +1106,32 @@ Happy coding!
           type: 'danger'
         });
         expect(response.statusCode).toEqual(400);
+      });
+
+      test('PUT does not log the raw picture URL on validation failure', async () => {
+        const spy = vi.spyOn(fastifyTestInstance.log, 'warn');
+        spy.mockClear();
+        const leakyUrl = 'https://example.com/file.txt?api_key=super-secret';
+
+        const response = await superPut('/update-my-about').send({
+          about: 'Teacher at freeCodeCamp',
+          name: 'Quincy Larson',
+          location: 'USA',
+          picture: leakyUrl
+        });
+
+        expect(response.statusCode).toEqual(400);
+        const call = spy.mock.calls.find(
+          ([, msg]) => msg === 'Invalid picture URL'
+        );
+        expect(call).toBeDefined();
+        const [logObject] = call!;
+        expect(JSON.stringify(logObject)).not.toContain(leakyUrl);
+        expect(JSON.stringify(logObject)).not.toContain('super-secret');
+        expect(logObject).toEqual({
+          hasPicture: true,
+          pictureLength: leakyUrl.length
+        });
       });
 
       test('PUT accepts an image URL with query string', async () => {

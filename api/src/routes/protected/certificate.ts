@@ -229,6 +229,9 @@ export const protectedCertificateRoutes: FastifyPluginCallbackTypebox = (
 
       if (!isKnownCertSlug(certSlug) || !isCertAllowed(certSlug)) {
         req.log.warn({ certSlug }, 'Unknown certificate slug');
+        fastify.Sentry?.metrics?.count('certificate.claim_blocked', 1, {
+          attributes: { reason: 'unknown_slug' }
+        });
         void reply.code(400);
         return {
           response: {
@@ -249,6 +252,10 @@ export const protectedCertificateRoutes: FastifyPluginCallbackTypebox = (
 
       if (!user) {
         void reply.code(500);
+        fastify.Sentry?.captureException(
+          new Error('User not found when claiming certificate')
+        );
+        fastify.Sentry?.metrics?.count('certificate.claim_user_missing', 1);
         req.log.error('User not found');
         return {
           type: 'danger',
@@ -262,6 +269,9 @@ export const protectedCertificateRoutes: FastifyPluginCallbackTypebox = (
       // TODO: Discuss if this is a requirement still
       if (!user.name) {
         req.log.warn('User does not have a name property');
+        fastify.Sentry?.metrics?.count('certificate.claim_blocked', 1, {
+          attributes: { certSlug, reason: 'name_missing' }
+        });
         void reply.code(400);
         return {
           response: {
@@ -275,6 +285,9 @@ export const protectedCertificateRoutes: FastifyPluginCallbackTypebox = (
 
       if (user[certType]) {
         req.log.debug({ certName }, 'User has already claimed certificate');
+        fastify.Sentry?.metrics?.count('certificate.claim_blocked', 1, {
+          attributes: { certSlug, reason: 'already_claimed' }
+        });
         void reply.code(200);
         return {
           response: {
@@ -300,6 +313,9 @@ export const protectedCertificateRoutes: FastifyPluginCallbackTypebox = (
           { certName },
           'User has not completed the tests for certificate'
         );
+        fastify.Sentry?.metrics?.count('certificate.claim_blocked', 1, {
+          attributes: { certSlug, reason: 'incomplete_steps' }
+        });
         void reply.code(400);
         return {
           response: {
@@ -396,10 +412,14 @@ export const protectedCertificateRoutes: FastifyPluginCallbackTypebox = (
           await fastify.sendEmail(notifyUser);
         } catch (e) {
           req.log.error(e, 'Failed to send congratulations email');
+          fastify.Sentry?.captureException(e);
         }
       }
 
       req.log.info({ certName, audit: true }, 'User has claimed certificate');
+      fastify.Sentry?.metrics?.count('certificate.claimed', 1, {
+        attributes: { certSlug }
+      });
       void reply.code(200);
       return {
         response: {
