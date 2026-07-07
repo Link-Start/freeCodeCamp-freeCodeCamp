@@ -3,6 +3,7 @@ import * as Sentry from '@sentry/node';
 import fp from 'fastify-plugin';
 
 import { getRedirectParams } from '../utils/redirection.js';
+import { clientNetInfo } from '../utils/logger.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -46,10 +47,11 @@ const errorHandling: FastifyPluginCallback = (fastify, _options, done) => {
       error.code === 'FST_CSRF_MISSING_SECRET';
 
     if (!isCSRFError) {
+      const context = { err: error, ...clientNetInfo(request) };
       if (reply.statusCode >= 500) {
-        request.log.error(error, 'Error in request');
+        request.log.error(context, 'Error in request');
       } else {
-        request.log.warn(error, 'Client error in request');
+        request.log.warn(context, 'Client error in request');
       }
     }
 

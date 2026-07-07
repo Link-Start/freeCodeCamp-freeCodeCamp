@@ -408,6 +408,9 @@ export const userRoutes: FastifyPluginCallbackTypebox = (
         const { userName } = (await msApiRes.json()) as { userName: string };
 
         if (!userName) {
+          fastify.Sentry?.captureException(
+            new Error('No userName found in Microsoft transcript response')
+          );
           req.log.error('No userName found in Microsoft transcript response');
           return reply.status(500).send({
             type: 'error',

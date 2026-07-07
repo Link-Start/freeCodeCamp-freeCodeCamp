@@ -212,7 +212,11 @@ describe('socratesRoutes', () => {
           });
         });
 
-        test('should return 500 on other Socrates API errors', async () => {
+        test('should return 500 and capture on other Socrates API errors', async () => {
+          const originalSentry = fastifyTestInstance.Sentry;
+          const captureException = vi.fn();
+          fastifyTestInstance.Sentry = { ...originalSentry, captureException };
+
           mockedFetch.mockResolvedValueOnce({
             ok: false,
             status: 503,
@@ -222,6 +226,8 @@ describe('socratesRoutes', () => {
           const response =
             await superPut('/socrates/get-hint').send(validPayload);
 
+          fastifyTestInstance.Sentry = originalSentry;
+
           expect(response.status).toBe(500);
           expect(response.body).toStrictEqual({
             error: 'socrates-unavailable',
@@ -229,9 +235,18 @@ describe('socratesRoutes', () => {
             attempts: 0,
             limit: 3
           });
+          expect(captureException).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({
+              message: 'Socrates API returned status 503'
+            })
+          );
         });
 
-        test('should return 500 when Socrates API returns invalid JSON', async () => {
+        test('should return 500 and capture when Socrates API returns invalid JSON', async () => {
+          const originalSentry = fastifyTestInstance.Sentry;
+          const captureException = vi.fn();
+          fastifyTestInstance.Sentry = { ...originalSentry, captureException };
+
           mockedFetch.mockResolvedValueOnce({
             ok: true,
             status: 200,
@@ -241,13 +256,22 @@ describe('socratesRoutes', () => {
           const response =
             await superPut('/socrates/get-hint').send(validPayload);
 
+          fastifyTestInstance.Sentry = originalSentry;
+
           expect(response.status).toBe(500);
           expect(response.body.type).toBe('danger');
           expect(response.body.attempts).toBe(0);
           expect(response.body.limit).toBe(3);
+          expect(captureException).toHaveBeenCalledExactlyOnceWith(
+            expect.any(Error)
+          );
         });
 
-        test('should return 500 when Socrates API returns no hint', async () => {
+        test('should return 500 and capture when Socrates API returns no hint', async () => {
+          const originalSentry = fastifyTestInstance.Sentry;
+          const captureException = vi.fn();
+          fastifyTestInstance.Sentry = { ...originalSentry, captureException };
+
           mockedFetch.mockResolvedValueOnce({
             ok: true,
             status: 200,
@@ -257,10 +281,17 @@ describe('socratesRoutes', () => {
           const response =
             await superPut('/socrates/get-hint').send(validPayload);
 
+          fastifyTestInstance.Sentry = originalSentry;
+
           expect(response.status).toBe(500);
           expect(response.body.type).toBe('danger');
           expect(response.body.attempts).toBe(0);
           expect(response.body.limit).toBe(3);
+          expect(captureException).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({
+              message: 'Socrates API did not return a hint'
+            })
+          );
         });
 
         test('should return 500 when fetch throws', async () => {

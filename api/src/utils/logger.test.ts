@@ -75,6 +75,15 @@ describe('serializers.req', () => {
     expect(result.ip).toBe('2.2.2.2');
   });
 
+  it('uses the first hop of a comma-separated x-forwarded-for chain', () => {
+    const result = serializers.req(
+      fakeRequest({
+        headers: { 'x-forwarded-for': '2.2.2.2, 10.0.0.1, 172.16.0.1' }
+      })
+    );
+    expect(result.ip).toBe('2.2.2.2');
+  });
+
   it('falls back to req.ip when no proxy headers are present', () => {
     const result = serializers.req(fakeRequest({ ip: '10.0.0.5' }));
     expect(result.ip).toBe('10.0.0.5');
@@ -189,15 +198,21 @@ describe('bindRouteToLogger', () => {
 });
 
 describe('genReqId', () => {
-  it('passes through a valid x-request-id header', () => {
-    expect(genReqId({ headers: { 'x-request-id': 'abc-123_DEF' } })).toBe(
+  it('passes through a valid cf-ray header', () => {
+    expect(genReqId({ headers: { 'cf-ray': 'abc-123_DEF' } })).toBe(
       'abc-123_DEF'
     );
   });
 
   it('uses the first value of an array header', () => {
-    expect(genReqId({ headers: { 'x-request-id': ['first', 'second'] } })).toBe(
+    expect(genReqId({ headers: { 'cf-ray': ['first', 'second'] } })).toBe(
       'first'
+    );
+  });
+
+  it('ignores a client-supplied x-request-id', () => {
+    expect(genReqId({ headers: { 'x-request-id': 'client-spoofed' } })).toMatch(
+      UUID_PATTERN
     );
   });
 
@@ -206,16 +221,14 @@ describe('genReqId', () => {
   });
 
   it('rejects headers longer than 64 characters', () => {
-    expect(genReqId({ headers: { 'x-request-id': 'a'.repeat(65) } })).toMatch(
+    expect(genReqId({ headers: { 'cf-ray': 'a'.repeat(65) } })).toMatch(
       UUID_PATTERN
     );
   });
 
   it('rejects headers with characters outside [A-Za-z0-9_-]', () => {
     for (const dirty of ['abc def', 'abc\ndef', 'abc"def', 'abc{def']) {
-      expect(genReqId({ headers: { 'x-request-id': dirty } })).toMatch(
-        UUID_PATTERN
-      );
+      expect(genReqId({ headers: { 'cf-ray': dirty } })).toMatch(UUID_PATTERN);
     }
   });
 });

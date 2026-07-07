@@ -69,9 +69,14 @@ const auth: FastifyPluginCallback = (fastify, _options, done) => {
   const TOKEN_EXPIRED = 'Access token is no longer valid';
 
   const setAccessDenied = (req: FastifyRequest, content: string) => {
-    fastify.Sentry?.metrics?.count('auth.access_denied', 1, {
-      attributes: { reason: content }
-    });
+    const isAnonymousPoll =
+      req.routeOptions?.url === '/user/session-user' &&
+      content === TOKEN_REQUIRED;
+    if (!isAnonymousPoll) {
+      fastify.Sentry?.metrics?.count('auth.access_denied', 1, {
+        attributes: { reason: content }
+      });
+    }
     req.accessDeniedMessage = { type: 'info', content };
   };
 

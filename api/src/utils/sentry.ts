@@ -86,17 +86,24 @@ const ISSUE_REQUEST_KEY_PATTERN =
   /(client_?secret|secret|passwd|password|authorization|cookie|api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|\bjwt\b|session[-_]?id|card[-_]?number|\bcvc\b|\bcvv\b|\btoken\b|email|name|payment_?method_?id|\bcode\b|\bstate\b)/i;
 
 const VALUE_SECRET_PATTERN =
-  /\bsk_(?:live|test)_[A-Za-z0-9]+\b|\bghp_[A-Za-z0-9]+\b|\bgithub_pat_[A-Za-z0-9_]+\b|\bxox[baprs]-[A-Za-z0-9-]+\b|Bearer [A-Za-z0-9._-]{20,}/g;
+  /\bsk_(?:live|test)_[A-Za-z0-9]+\b|\bwhsec_[A-Za-z0-9]+\b|\bghp_[A-Za-z0-9]+\b|\bgithub_pat_[A-Za-z0-9_]+\b|\bxox[baprs]-[A-Za-z0-9-]+\b|\beyJ[A-Za-z0-9_-]{1,1024}\.[A-Za-z0-9_-]{1,8192}\.[A-Za-z0-9_-]{1,1024}|[Bb](?:earer|asic) [A-Za-z0-9._~+/=-]{16,4096}/g;
 
-const EMAIL_PATTERN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+const EMAIL_PATTERN =
+  /\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}/g;
+
+const MAX_SCRUB_LENGTH = 200_000;
 
 const redactSecretSubstrings = (value: string): string =>
-  value.replace(VALUE_SECRET_PATTERN, '[REDACTED]');
+  value.length > MAX_SCRUB_LENGTH
+    ? value
+    : value.replace(VALUE_SECRET_PATTERN, '[REDACTED]');
 
 const redactIssueSubstrings = (value: string): string =>
-  value
-    .replace(VALUE_SECRET_PATTERN, '[REDACTED]')
-    .replace(EMAIL_PATTERN, '[REDACTED]');
+  value.length > MAX_SCRUB_LENGTH
+    ? value
+    : value
+        .replace(VALUE_SECRET_PATTERN, '[REDACTED]')
+        .replace(EMAIL_PATTERN, '[REDACTED]');
 
 const redactDeep = (
   value: unknown,
@@ -123,7 +130,7 @@ const redactDeep = (
 };
 
 const scrubSecretsDeep = (value: unknown, depth = 0): unknown =>
-  redactDeep(value, SECRET_KEY_PATTERN, redactSecretSubstrings, depth);
+  redactDeep(value, SECRET_KEY_PATTERN, redactSecretSubstrings, depth, true);
 
 /**
  * Remove pino bindings that Sentry already records as native log fields, then
@@ -133,6 +140,9 @@ const scrubSecretsDeep = (value: unknown, depth = 0): unknown =>
  * @returns The same log with redundant attributes removed and secrets redacted.
  */
 export const scrubRedundantLogAttributes = (log: Log): Log => {
+  if (log.message != null) {
+    log.message = redactSecretSubstrings(String(log.message));
+  }
   if (log.attributes == null) return log;
   for (const key of REDUNDANT_LOG_ATTRIBUTES) {
     delete log.attributes[key];
@@ -190,6 +200,7 @@ export const scrubRequestPii = (event: ErrorEvent): ErrorEvent => {
     const scrubbed: RequestEventData = { ...request };
     delete scrubbed.query_string;
     delete scrubbed.cookies;
+    delete scrubbed.env;
     if (scrubbed.url != null) {
       scrubbed.url = redactIssueSubstrings(stripQueryFromUrl(scrubbed.url));
     }
@@ -205,11 +216,32 @@ export const scrubRequestPii = (event: ErrorEvent): ErrorEvent => {
   if (out.exception?.values) {
     out.exception = {
       ...out.exception,
-      values: out.exception.values.map(value =>
-        typeof value.value === 'string'
-          ? { ...value, value: redactIssueSubstrings(value.value) }
-          : value
-      )
+      values: out.exception.values.map(value => {
+        const next = { ...value };
+        if (typeof next.value === 'string') {
+          next.value = redactIssueSubstrings(next.value);
+        }
+        if (next.stacktrace?.frames) {
+          next.stacktrace = {
+            ...next.stacktrace,
+            frames: next.stacktrace.frames.map(frame =>
+              frame.vars == null
+                ? frame
+                : {
+                    ...frame,
+                    vars: redactDeep(
+                      frame.vars,
+                      ISSUE_REQUEST_KEY_PATTERN,
+                      redactIssueSubstrings,
+                      0,
+                      true
+                    ) as typeof frame.vars
+                  }
+            )
+          };
+        }
+        return next;
+      })
     };
   }
 
@@ -221,6 +253,33 @@ export const scrubRequestPii = (event: ErrorEvent): ErrorEvent => {
       0,
       true
     ) as ErrorEvent['extra'];
+  }
+
+  if (out.user != null) {
+    out.user = redactDeep(
+      out.user,
+      SECRET_KEY_PATTERN,
+      redactSecretSubstrings,
+      0,
+      true
+    ) as ErrorEvent['user'];
+  }
+
+  if (out.breadcrumbs) {
+    out.breadcrumbs = out.breadcrumbs.map(breadcrumb =>
+      breadcrumb.data == null
+        ? breadcrumb
+        : {
+            ...breadcrumb,
+            data: redactDeep(
+              breadcrumb.data,
+              ISSUE_REQUEST_KEY_PATTERN,
+              redactIssueSubstrings,
+              0,
+              true
+            ) as typeof breadcrumb.data
+          }
+    );
   }
 
   return out;

@@ -11,9 +11,12 @@ const firstValue = (
   value: string | string[] | undefined
 ): string | undefined => (Array.isArray(value) ? value[0] : value);
 
+const firstHop = (value: string | string[] | undefined): string | undefined =>
+  firstValue(value)?.split(',')[0]?.trim();
+
 const clientIp = (req: FastifyRequest): string | undefined =>
   firstValue(req.headers['cf-connecting-ip']) ??
-  firstValue(req.headers['x-forwarded-for']) ??
+  firstHop(req.headers['x-forwarded-for']) ??
   firstValue(req.headers['x-real-ip']) ??
   req.ip;
 
@@ -75,16 +78,17 @@ export const serializers = {
 const REQUEST_ID_PATTERN = /^[\w-]{1,64}$/;
 
 /**
- * Generate a request id, preferring a valid inbound x-request-id header.
+ * Generate a request id, preferring the Cloudflare edge ray id. A
+ * client-supplied x-request-id is not trusted (spoofable / collidable).
  *
  * @param req The incoming request.
- * @returns The sanitized inbound id or a random UUID.
+ * @returns The edge-set ray id when valid, otherwise a random UUID.
  */
 export const genReqId = (req: {
   headers: Record<string, string | string[] | undefined>;
 }): string => {
-  const inbound = firstValue(req.headers['x-request-id']);
-  return inbound && REQUEST_ID_PATTERN.test(inbound) ? inbound : randomUUID();
+  const edgeId = firstValue(req.headers['cf-ray']);
+  return edgeId && REQUEST_ID_PATTERN.test(edgeId) ? edgeId : randomUUID();
 };
 
 const SENSITIVE_QUERY_PARAMS = [

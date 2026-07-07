@@ -175,12 +175,20 @@ describe('errorHandling', () => {
 
     await fastify.inject({
       method: 'GET',
-      url: '/test'
+      url: '/test',
+      headers: {
+        'x-forwarded-for': '203.0.113.7',
+        'cf-ipcountry': 'US'
+      }
     });
 
     expect(logSpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        message: 'a very bad thing happened'
+        err: expect.objectContaining({
+          message: 'a very bad thing happened'
+        }) as unknown,
+        ip: '203.0.113.7',
+        country: 'US'
       }),
       'Error in request'
     );
@@ -196,7 +204,9 @@ describe('errorHandling', () => {
 
     expect(logSpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        message: 'a very bad thing happened'
+        err: expect.objectContaining({
+          message: 'a very bad thing happened'
+        }) as unknown
       }),
       'Client error in request'
     );

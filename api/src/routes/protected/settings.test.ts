@@ -656,6 +656,30 @@ Happy coding!
         expect(response.body).toEqual(updateErrorResponse);
         expect(response.statusCode).toEqual(400);
       });
+
+      test('PUT captures a Sentry Issue and returns 500 when the update fails', async () => {
+        const originalSentry = fastifyTestInstance.Sentry;
+        const captureException = vi.fn();
+        fastifyTestInstance.Sentry = { ...originalSentry, captureException };
+
+        const original = fastifyTestInstance.prisma.user.update;
+        fastifyTestInstance.prisma.user.update = vi
+          .fn()
+          .mockRejectedValue(new Error('db down')) as typeof original;
+
+        const response = await superPut('/update-my-theme').send({
+          theme: 'night'
+        });
+
+        fastifyTestInstance.prisma.user.update = original;
+        fastifyTestInstance.Sentry = originalSentry;
+
+        expect(response.statusCode).toEqual(500);
+        expect(response.body).toEqual(updateErrorResponse);
+        expect(captureException).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ message: 'db down' })
+        );
+      });
     });
 
     describe('/update-my-username', () => {

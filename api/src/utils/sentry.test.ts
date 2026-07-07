@@ -342,6 +342,117 @@ describe('scrubRedundantLogAttributes', () => {
 
     expect(result.attributes?.email).toBe('keep@me.com');
   });
+
+  it('redacts a bare JWT substring in a log string value', () => {
+    const result = scrubRedundantLogAttributes(
+      makeLog({
+        attributes: {
+          note: 'token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dozjgNryP4J3jVmNHl0w5 rest'
+        }
+      })
+    );
+
+    expect(result.attributes?.note).toBe('token [REDACTED] rest');
+  });
+
+  it('redacts a lowercase bearer token substring in a log string value', () => {
+    const result = scrubRedundantLogAttributes(
+      makeLog({
+        attributes: {
+          note: 'auth bearer abcdefghijklmnopqrstuvwxyz012345 done'
+        }
+      })
+    );
+
+    expect(result.attributes?.note).toBe('auth [REDACTED] done');
+  });
+
+  it('fail-safe redacts a Logs attribute value nested past the depth cap', () => {
+    const buildNested = (depth: number, leaf: unknown): unknown =>
+      depth <= 0 ? leaf : { nested: buildNested(depth - 1, leaf) };
+
+    const result = scrubRedundantLogAttributes(
+      makeLog({
+        attributes: buildNested(9, 'deep-plain-value') as Record<
+          string,
+          unknown
+        >
+      })
+    );
+
+    const serialized = JSON.stringify(result.attributes);
+    expect(serialized).toContain('[REDACTED]');
+    expect(serialized).not.toContain('deep-plain-value');
+  });
+
+  it('redacts a secret-shaped substring in the log message', () => {
+    const result = scrubRedundantLogAttributes(
+      makeLog({
+        message: 'auth bearer abcdefghijklmnopqrstuvwxyz012345 failed'
+      })
+    );
+
+    expect(result.message).toBe('auth [REDACTED] failed');
+  });
+
+  it('keeps an email in the log message unredacted on the Logs channel', () => {
+    const result = scrubRedundantLogAttributes(
+      makeLog({ message: 'donation outreach to user@example.com queued' })
+    );
+
+    expect(result.message).toBe('donation outreach to user@example.com queued');
+  });
+
+  it('redacts a Stripe webhook secret in an attribute value', () => {
+    const result = scrubRedundantLogAttributes(
+      makeLog({ attributes: { note: 'sig whsec_abcdef0123456789 ok' } })
+    );
+
+    expect(result.attributes?.note).toBe('sig [REDACTED] ok');
+  });
+
+  it('redacts a Basic auth credential in an attribute value', () => {
+    const result = scrubRedundantLogAttributes(
+      makeLog({
+        attributes: { note: 'auth Basic dXNlcjpodW50ZXIyc2VjcmV0 end' }
+      })
+    );
+
+    expect(result.attributes?.note).toBe('auth [REDACTED] end');
+  });
+
+  it('scrubs a pathological JWT-prefix string without catastrophic backtracking', () => {
+    const attack = 'eyJ'.repeat(80000);
+    const result = scrubRedundantLogAttributes(
+      makeLog({ attributes: { note: attack } })
+    );
+
+    expect(typeof result.attributes?.note).toBe('string');
+  });
+
+  it('redacts a secret in a boxed-String (parameterized) message', () => {
+    const message = Object.assign(
+      new String('issued token sk_live_BOXEDLEAK now'),
+      {
+        __sentry_template_string__: 'issued token %s now',
+        __sentry_template_values__: ['sk_live_BOXEDLEAK']
+      }
+    ) as unknown as Log['message'];
+
+    const result = scrubRedundantLogAttributes(makeLog({ message }));
+
+    expect(String(result.message)).toBe('issued token [REDACTED] now');
+  });
+
+  it('redacts secrets nested inside an array attribute value', () => {
+    const result = scrubRedundantLogAttributes(
+      makeLog({
+        attributes: { items: [{ list: [{ client_secret: 'ARRLEAK' }] }] }
+      })
+    );
+
+    expect(JSON.stringify(result.attributes)).not.toContain('ARRLEAK');
+  });
 });
 
 describe('scrubRequestPii', () => {
@@ -489,6 +600,90 @@ describe('scrubRequestPii', () => {
       'failed for user [REDACTED]'
     );
     expect(result.extra?.email).toBe('[REDACTED]');
+  });
+
+  it('redacts secret-shaped local variables captured in stack frames', () => {
+    const event: ErrorEvent = {
+      type: undefined,
+      exception: {
+        values: [
+          {
+            value: 'boom',
+            stacktrace: {
+              frames: [
+                {
+                  function: 'doThing',
+                  vars: {
+                    jwt_access_token: 'signed-cookie-value',
+                    note: 'holding sk_live_FRAMELEAK here',
+                    userId: 'u1'
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    };
+
+    const result = scrubRequestPii(event);
+    const vars = result.exception?.values?.[0]?.stacktrace?.frames?.[0]?.vars;
+
+    expect(vars?.jwt_access_token).toBe('[REDACTED]');
+    expect(vars?.note).toBe('holding [REDACTED] here');
+    expect(vars?.userId).toBe('u1');
+  });
+
+  it('redacts secret-shaped fields on event.user but keeps id and email', () => {
+    const event: ErrorEvent = {
+      type: undefined,
+      user: { id: 'u1', email: 'donor@example.com', apiKey: 'sk_live_USERLEAK' }
+    };
+
+    const result = scrubRequestPii(event);
+
+    expect(result.user?.id).toBe('u1');
+    expect(result.user?.email).toBe('donor@example.com');
+    expect((result.user as Record<string, unknown>).apiKey).toBe('[REDACTED]');
+  });
+
+  it('strips request.env entirely', () => {
+    const result = scrubRequestPii(
+      eventWithRequest({
+        env: { REMOTE_USER: 'a@b.com', SERVER_SECRET: 'sk_live_ENVLEAK' }
+      })
+    );
+
+    expect(result.request?.env).toBeUndefined();
+  });
+
+  it('redacts secret-shaped data in breadcrumbs', () => {
+    const event: ErrorEvent = {
+      type: undefined,
+      breadcrumbs: [
+        {
+          category: 'http',
+          data: {
+            url: 'https://api.stripe.com?key=sk_live_BCLEAK',
+            token: 'ghp_BCLEAK'
+          }
+        }
+      ]
+    };
+
+    const result = scrubRequestPii(event);
+    const data = result.breadcrumbs?.[0]?.data;
+
+    expect(data?.token).toBe('[REDACTED]');
+    expect(data?.url).toBe('https://api.stripe.com?key=[REDACTED]');
+  });
+
+  it('scrubs a 1MB JWT-prefix body within the ReDoS budget', () => {
+    const result = scrubRequestPii(
+      eventWithRequest({ data: 'eyJ'.repeat(333333) })
+    );
+
+    expect(typeof result.request?.data).toBe('string');
   });
 });
 
